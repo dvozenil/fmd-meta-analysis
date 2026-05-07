@@ -30,6 +30,7 @@ Repository: https://github.com/dvozenil/fmd-meta-analysis
 
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import json
@@ -55,6 +56,26 @@ if load_dotenv:
     load_dotenv(Path(__file__).with_name(".env"))
 
 # ---------------------------------------------------------------------------
+# CLI ARGUMENT PARSING
+# ---------------------------------------------------------------------------
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="FND Neuroimaging Meta-Analysis — PRISMA-compliant database search"
+    )
+    parser.add_argument(
+        "--mode", choices=["update", "full", "os_validation"],
+        default=None,
+        help="Search mode (overrides FND_SEARCH_MODE env var)",
+    )
+    parser.add_argument("--update", action="store_const", const="update", dest="mode")
+    parser.add_argument("--full", action="store_const", const="full", dest="mode")
+    parser.add_argument("--os_validation", action="store_const", const="os_validation", dest="mode")
+    return parser.parse_args()
+
+_cli_args = _parse_args()
+
+# ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
 
@@ -62,7 +83,7 @@ if load_dotenv:
 #   "update"        — 2015 onward (functional imaging track, updating Boeckle)
 #   "full"          — inception to present (structural imaging track)
 #   "os_validation" — inception to August 2015 using original-study terms
-SEARCH_MODE = os.getenv("FND_SEARCH_MODE", "update")
+SEARCH_MODE = _cli_args.mode or os.getenv("FND_SEARCH_MODE", "update")
 VALID_SEARCH_MODES = {"update", "full", "os_validation"}
 if SEARCH_MODE not in VALID_SEARCH_MODES:
     raise ValueError(
@@ -593,9 +614,17 @@ class WebOfScienceClient:
 
 
 class ScopusClient:
-    """Elsevier Scopus Search API. Requires API key + institutional access."""
+    """Elsevier Scopus Search + Abstract Retrieval APIs.
+
+    Search uses STANDARD view (no abstracts). Abstracts are fetched in a
+    second pass via Abstract Retrieval API with META_ABS view, which
+    includes dc:description without requiring FULL-view entitlement.
+    """
 
     BASE = "https://api.elsevier.com/content/search/scopus"
+    ABSTRACT_BASE = "https://api.elsevier.com/content/abstract"
+    ABSTRACT_VIEWS = ("META_ABS", "META", "FULL")
+    ABSTRACT_DELAY = 0.35  # seconds between abstract retrieval calls
 
     @retry()
     def search(self, query: str, count: int = 100) -> list[Record]:
@@ -606,8 +635,11 @@ class ScopusClient:
         headers = {"X-ELS-APIKey": SCOPUS_API_KEY, "Accept": "application/json"}
         records: list[Record] = []
         start = 0
+        page_size = min(count, 25)
+        if page_size != count:
+            log.info(f"Scopus page size reduced to {page_size} to match the service-level maximum")
         while True:
-            params = {"query": query, "count": count, "start": start, "view": "COMPLETE"}
+            params = {"query": query, "count": page_size, "start": start, "view": "STANDARD"}
             r = requests.get(self.BASE, headers=headers, params=params, timeout=60)
             r.raise_for_status()
             data = r.json()
@@ -618,11 +650,81 @@ class ScopusClient:
                 records.append(self._parse(e))
             total = int(data.get("search-results", {}).get("opensearch:totalResults", 0))
             log.info(f"Scopus: {len(records)}/{total}")
-            start += count
+            start += page_size
             if start >= total:
                 break
             time.sleep(0.3)
+
         return records
+
+    def _enrich_abstracts(self, records: list[Record]) -> None:
+        """Fetch abstracts via Abstract Retrieval API for records missing them."""
+        need = [r for r in records if not r.abstract and (r.doi or r.source_id)]
+        if not need:
+            return
+        log.info(f"Scopus: fetching abstracts for {len(need)} records via Abstract Retrieval API")
+
+        view = self._probe_abstract_view()
+        if view is None:
+            log.warning("Scopus Abstract Retrieval: no accessible view found; skipping enrichment")
+            return
+        log.info(f"Scopus Abstract Retrieval: using view={view}")
+
+        fetched = 0
+        failed = 0
+        for i, rec in enumerate(need, 1):
+            abstract = self._fetch_one_abstract(rec.doi, rec.source_id, view)
+            if abstract:
+                rec.abstract = abstract
+                fetched += 1
+            else:
+                failed += 1
+            if i % 50 == 0:
+                log.info(f"  Abstract retrieval progress: {i}/{len(need)} "
+                         f"(fetched={fetched}, failed={failed})")
+            time.sleep(self.ABSTRACT_DELAY)
+
+        log.info(f"Scopus Abstract Retrieval done: {fetched} abstracts fetched, "
+                 f"{failed} unavailable out of {len(need)} attempted")
+
+    def _probe_abstract_view(self) -> str | None:
+        """Try views in preference order on a known DOI to find one that works."""
+        headers = {"X-ELS-APIKey": SCOPUS_API_KEY, "Accept": "application/json"}
+        test_doi = "10.1038/npp.2015.79"
+        for view in self.ABSTRACT_VIEWS:
+            try:
+                url = f"{self.ABSTRACT_BASE}/doi/{test_doi}"
+                r = requests.get(url, headers=headers, params={"view": view}, timeout=30)
+                if r.status_code == 200:
+                    return view
+                log.debug(f"  Abstract Retrieval view={view} returned {r.status_code}")
+            except requests.RequestException:
+                continue
+            time.sleep(0.3)
+        return None
+
+    def _fetch_one_abstract(self, doi: str | None, scopus_id: str | None,
+                            view: str) -> str:
+        """Retrieve abstract text for a single document."""
+        headers = {"X-ELS-APIKey": SCOPUS_API_KEY, "Accept": "application/json"}
+        if doi:
+            url = f"{self.ABSTRACT_BASE}/doi/{doi}"
+        elif scopus_id:
+            url = f"{self.ABSTRACT_BASE}/scopus_id/{scopus_id}"
+        else:
+            return ""
+        try:
+            r = requests.get(url, headers=headers, params={"view": view}, timeout=30)
+            if r.status_code != 200:
+                return ""
+            data = r.json()
+            coredata = data.get("abstracts-retrieval-response", {}).get("coredata", {})
+            abstract = coredata.get("dc:description", "")
+            if isinstance(abstract, dict):
+                abstract = abstract.get("$", "")
+            return abstract.strip()
+        except (requests.RequestException, ValueError, KeyError):
+            return ""
 
     @staticmethod
     def _parse(e: dict[str, Any]) -> Record:
@@ -838,6 +940,15 @@ def main() -> None:
     deduped, dedup_stats = deduplicate(all_records)
     log.info(f"After dedup: {len(deduped)} unique records "
              f"({dedup_stats['duplicates_removed']} duplicates removed)")
+
+    # Fetch abstracts only for deduplicated Scopus-sourced records missing them.
+    # PubMed/Europe PMC already include abstracts; duplicates have been removed.
+    scopus_need_abstract = [r for r in deduped
+                            if r.source_db == "scopus" and not r.abstract]
+    if scopus_need_abstract:
+        log.info(f"Fetching abstracts for {len(scopus_need_abstract)} Scopus-only "
+                 f"records (post-dedup)")
+        ScopusClient()._enrich_abstracts(scopus_need_abstract)
 
     export_results(deduped, all_records_by_db, queries, per_db, dedup_stats)
 
