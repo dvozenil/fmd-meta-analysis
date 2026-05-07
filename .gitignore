@@ -1,8 +1,11 @@
 # Search run outputs (large, generated per-run)
 fnd_search_*/
+data/llm_screening_results_*.jsonl
+data/*_OLD.jsonl
 
 # Python
 __pycache__/
+scripts/__pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/

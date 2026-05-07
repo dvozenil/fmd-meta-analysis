@@ -27,15 +27,18 @@ Boeckle et al. (2016) conducted an ALE meta-analysis of **functional** neuroimag
 ```
 fnd_meta_search.py      # PRISMA-compliant API search script
 requirements.txt        # Python dependencies
-s12888-016-0890-x.pdf   # Boeckle et al. (2016) — original study
-A_Voxel-Wise_Meta-...   # Mavroudis et al. (2024) — existing structural meta-analysis
+scripts/                # Test-set sampling and LLM screening helpers
+docs/                   # Execution notes and validation protocol
+data/                   # Screening fixtures and evaluation summaries
 ```
+
+Source PDFs live in [docs/references/](docs/references/README.md).
 
 ## Search script
 
 `fnd_meta_search.py` queries PubMed, Europe PMC, Web of Science, and Scopus via their APIs. PsycINFO is searched manually (no REST API).
 
-### Two search modes
+### Search modes
 
 ```bash
 # Functional track: 2015 onward (updating the original study)
@@ -43,6 +46,9 @@ FND_SEARCH_MODE=update python fnd_meta_search.py
 
 # Structural track: inception to present (no prior comprehensive ALE)
 FND_SEARCH_MODE=full python fnd_meta_search.py
+
+# Validation track: approximate Boeckle et al. (2016) terms to August 2015
+FND_SEARCH_MODE=os_validation python fnd_meta_search.py
 ```
 
 ### Setup
@@ -52,16 +58,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Required: NCBI email (free account)
-export NCBI_EMAIL="your.email@institution.edu"
-
-# Recommended: NCBI API key (10 req/s vs 3/s — free at ncbi.nlm.nih.gov/account/settings)
-export NCBI_API_KEY="your_key"
-
-# Optional: institutional API keys (script skips gracefully if missing)
-export WOS_API_KEY="your_key"
-export SCOPUS_API_KEY="your_key"
+# Put API keys in .env at the repo root. Start from:
+cp .env.example .env
 ```
+
+The search script loads `.env` automatically. Missing Scopus/WoS keys are handled
+gracefully; those databases are skipped and logged.
 
 ### Output
 
@@ -74,6 +76,9 @@ Each run creates a timestamped folder (`fnd_search_YYYYMMDD_HHMMSS/`) containing
 - `prisma_search_metadata.json` — PRISMA flow diagram numbers
 - `search_log.txt` — full execution log
 
+The generated raw screening outputs are not committed by default; the committed
+benchmark fixtures and summaries are documented in [data/README.md](data/README.md).
+
 ## Methodology decisions
 
 Documented in the [Notion protocol page](https://app.notion.com/p/352cf8786b81816fb261cff71e17249f). Key choices:
@@ -82,6 +87,8 @@ Documented in the [Notion protocol page](https://app.notion.com/p/352cf8786b8181
 - **Risk of bias:** Newcastle-Ottawa Scale + neuroimaging-specific quality supplement
 - **Screening:** AI-assisted dual screening (LLM + human), validated against original study results
 - **Citation chasing:** backward (reference lists) + forward (Google Scholar "Cited by")
+
+For the current working state, see [docs/repo_cleanup_and_next_steps.md](docs/repo_cleanup_and_next_steps.md).
 
 ## References
 
