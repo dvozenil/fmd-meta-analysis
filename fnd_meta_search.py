@@ -12,6 +12,8 @@ disorder, extending to:
 Search modes:
   - "update": 2015 onward (functional track — updating the OS)
   - "full":   inception to present (structural track — no prior meta-analysis)
+  - "os_validation": inception to August 2015 using terms matched as closely
+    as practical to Boeckle et al. (2016), for validation only
 
 Databases covered:
   - PubMed (NCBI E-utilities)     — free, API key recommended
@@ -21,7 +23,7 @@ Databases covered:
   - PsycINFO                      — no REST API; searched manually via OVID/EBSCOhost
 
 Dependencies:
-    pip install biopython requests python-dateutil
+    pip install biopython requests python-dotenv
 
 Repository: https://github.com/dvozenil/fmd-meta-analysis
 """
@@ -44,17 +46,36 @@ from xml.etree import ElementTree as ET
 import requests
 from Bio import Entrez
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv(Path(__file__).with_name(".env"))
+
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
 
 # Search mode:
-#   "update" — 2015 onward (functional imaging track, updating Boeckle et al.)
-#   "full"   — inception to present (structural imaging track, or validation)
+#   "update"        — 2015 onward (functional imaging track, updating Boeckle)
+#   "full"          — inception to present (structural imaging track)
+#   "os_validation" — inception to August 2015 using original-study terms
 SEARCH_MODE = os.getenv("FND_SEARCH_MODE", "update")
+VALID_SEARCH_MODES = {"update", "full", "os_validation"}
+if SEARCH_MODE not in VALID_SEARCH_MODES:
+    raise ValueError(
+        f"Unknown FND_SEARCH_MODE={SEARCH_MODE!r}; expected one of "
+        f"{sorted(VALID_SEARCH_MODES)}"
+    )
 
 SEARCH_START_YEAR: int | None = 2015 if SEARCH_MODE == "update" else None
-SEARCH_END_DATE = "2026/04/24"  # YYYY/MM/DD — update to your actual run date
+DEFAULT_SEARCH_END_DATE = (
+    "2015/08/31" if SEARCH_MODE == "os_validation"
+    else datetime.now().strftime("%Y/%m/%d")
+)
+SEARCH_END_DATE = os.getenv("FND_SEARCH_END_DATE", DEFAULT_SEARCH_END_DATE)
 
 # NCBI credentials (required by NCBI; get a free API key at
 # https://www.ncbi.nlm.nih.gov/account/settings/ for 10 req/s vs 3/s)
@@ -191,26 +212,92 @@ IMAGING_TERMS = [
     "perfusion",
 ]
 
+# Original-study validation terms. Boeckle et al. (2016) report searching
+# Medline, PsycINFO, Psyndex, and Cochrane to August 2015 with these concept
+# blocks. Database syntax is adapted here for the APIs this script can query.
+OS_FND_TERMS = [
+    "dissociative disorder",
+    "functional disorder",
+    "conversion disorder",
+]
+
+OS_IMAGING_TERMS = [
+    "neuro imaging",
+    "magnetic resonance imaging",
+    "fMRI",
+    "MRI",
+    "VBM",
+    "PET",
+]
+
+
+def _active_terms() -> tuple[list[str], list[str]]:
+    """Return FND and imaging term lists for the current search mode."""
+    if SEARCH_MODE == "os_validation":
+        return OS_FND_TERMS, OS_IMAGING_TERMS
+    return FND_TERMS, IMAGING_TERMS
+
 
 def _date_filter_pubmed() -> str:
-    """Build PubMed date filter, or empty string if searching from inception."""
-    if SEARCH_START_YEAR is None:
-        return ""
-    return (f'AND ("{SEARCH_START_YEAR}/01/01"[Date - Publication] : '
-            f'"{SEARCH_END_DATE}"[Date - Publication])')
+    """Build PubMed date filter."""
+    start = f"{SEARCH_START_YEAR}/01/01" if SEARCH_START_YEAR else "1800/01/01"
+    return (
+        f'AND ("{start}"[Date - Publication] : '
+        f'"{SEARCH_END_DATE}"[Date - Publication])'
+    )
+
+
+def _date_filter_year_range() -> str:
+    """Build year range for APIs that accept only publication years."""
+    start = SEARCH_START_YEAR if SEARCH_START_YEAR else 1800
+    end = int(SEARCH_END_DATE[:4])
+    return f"{start} TO {end}"
+
+
+def _scopus_date_filter() -> str:
+    """Build Scopus publication-year filter."""
+    end = int(SEARCH_END_DATE[:4])
+    if SEARCH_START_YEAR:
+        return f" AND PUBYEAR > {SEARCH_START_YEAR - 1} AND PUBYEAR < {end + 1}"
+    return f" AND PUBYEAR < {end + 1}"
+
+
+def _build_wos_phrase_or_block(terms: list[str]) -> str:
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _build_europepmc_phrase_or_block(terms: list[str]) -> str:
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _build_scopus_phrase_or_block(terms: list[str]) -> str:
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _build_pubmed_text_block(terms: list[str]) -> str:
+    return " OR ".join(f'"{t}"[tiab]' for t in terms)
 
 
 def build_pubmed_query() -> str:
     """PubMed syntax: uses [MeSH Terms], [tiab], field tags."""
+    fnd_terms, imaging_terms = _active_terms()
+    if SEARCH_MODE == "os_validation":
+        fnd_block = _build_pubmed_text_block(fnd_terms)
+        imaging_block = (
+            _build_pubmed_text_block(imaging_terms)
+            + ' OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])'
+        )
+        return f"({fnd_block}) AND ({imaging_block}) {_date_filter_pubmed()}"
+
     fnd_block = (
         '("Conversion Disorder"[MeSH] OR "Dissociative Disorders"[MeSH] '
-        'OR ' + ' OR '.join(f'"{t}"[tiab]' for t in FND_TERMS) + ')'
+        'OR ' + _build_pubmed_text_block(fnd_terms) + ')'
     )
     imaging_block = (
         '("Neuroimaging"[MeSH] OR "Magnetic Resonance Imaging"[MeSH] '
         'OR "Diffusion Tensor Imaging"[MeSH] OR "Positron-Emission Tomography"[MeSH] '
         'OR "Tomography, Emission-Computed, Single-Photon"[MeSH] '
-        'OR ' + ' OR '.join(f'"{t}"[tiab]' for t in IMAGING_TERMS) + ')'
+        'OR ' + _build_pubmed_text_block(imaging_terms) + ')'
     )
     filters = (
         '(English[Language]) '
@@ -226,19 +313,24 @@ def build_pubmed_query() -> str:
 
 def build_wos_query() -> str:
     """Web of Science syntax: TS= searches Topic (title + abstract + keywords)."""
-    fnd  = " OR ".join(f'"{t}"' for t in FND_TERMS)
-    imag = " OR ".join(f'"{t}"' for t in IMAGING_TERMS)
-    date_part = (f' AND PY={SEARCH_START_YEAR}-{datetime.now().year}'
-                 if SEARCH_START_YEAR else "")
+    fnd_terms, imaging_terms = _active_terms()
+    fnd = _build_wos_phrase_or_block(fnd_terms)
+    imag = _build_wos_phrase_or_block(imaging_terms)
+    if SEARCH_MODE == "os_validation":
+        imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
+    year_range = _date_filter_year_range().replace(" TO ", "-")
+    date_part = f" AND PY={year_range}"
     return f'TS=({fnd}) AND TS=({imag}) AND LA=(English){date_part}'
 
 
 def build_europepmc_query() -> str:
     """Europe PMC syntax: similar to Lucene. Uses TITLE_ABS, PUB_YEAR."""
-    fnd  = " OR ".join(f'"{t}"' for t in FND_TERMS)
-    imag = " OR ".join(f'"{t}"' for t in IMAGING_TERMS)
-    date_part = (f' AND (PUB_YEAR:[{SEARCH_START_YEAR} TO {datetime.now().year}])'
-                 if SEARCH_START_YEAR else "")
+    fnd_terms, imaging_terms = _active_terms()
+    fnd = _build_europepmc_phrase_or_block(fnd_terms)
+    imag = _build_europepmc_phrase_or_block(imaging_terms)
+    if SEARCH_MODE == "os_validation":
+        imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
+    date_part = f" AND (PUB_YEAR:[{_date_filter_year_range()}])"
     return (
         f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag})) '
         f'AND (LANG:"eng"){date_part}'
@@ -247,10 +339,12 @@ def build_europepmc_query() -> str:
 
 def build_scopus_query() -> str:
     """Scopus syntax: TITLE-ABS-KEY field tag, AND/OR Boolean."""
-    fnd  = " OR ".join(f'"{t}"' for t in FND_TERMS)
-    imag = " OR ".join(f'"{t}"' for t in IMAGING_TERMS)
-    date_part = (f' AND PUBYEAR > {SEARCH_START_YEAR - 1}'
-                 if SEARCH_START_YEAR else "")
+    fnd_terms, imaging_terms = _active_terms()
+    fnd = _build_scopus_phrase_or_block(fnd_terms)
+    imag = _build_scopus_phrase_or_block(imaging_terms)
+    if SEARCH_MODE == "os_validation":
+        imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
+    date_part = _scopus_date_filter()
     return (
         f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag})){date_part} '
         f'AND LANGUAGE(english)'
@@ -639,27 +733,52 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
     log.info(f"Wrote RIS export -> {ris_path}")
 
     # 4. PRISMA search metadata
+    if SEARCH_MODE == "os_validation":
+        search_scope_note = (
+            "OS validation mode approximates the Boeckle et al. (2016) search "
+            "terms and end date for pipeline validation only. It is not the "
+            "expanded production search strategy."
+        )
+        filters_applied = {
+            "language": "English in non-PubMed API queries where supported",
+            "date": f"inception to {SEARCH_END_DATE}",
+            "screening_filters": (
+                "Human/adult/primary research criteria are applied during "
+                "screening to stay close to the original study workflow."
+            ),
+        }
+    else:
+        search_scope_note = (
+            "Case reports, reviews, and non-primary research are NOT excluded "
+            "at search stage per PRISMA 2020 recommendations. They are "
+            "excluded during title/abstract screening."
+        )
+        filters_applied = {
+            "language": "English",
+            "subject": "Humans (PubMed only — other DBs filtered at screening)",
+            "excluded_pub_types": ["Editorial", "Letter", "Comment"],
+        }
+
     prisma_meta = {
         "run_id": RUN_ID,
         "search_mode": SEARCH_MODE,
+        "search_profile": (
+            "Boeckle et al. 2016 validation approximation"
+            if SEARCH_MODE == "os_validation"
+            else "expanded FND neuroimaging protocol"
+        ),
         "search_date": datetime.now(timezone.utc).isoformat(),
-        "search_range": (f"{SEARCH_START_YEAR}-01-01 to {SEARCH_END_DATE}"
-                         if SEARCH_START_YEAR else f"inception to {SEARCH_END_DATE}"),
+        "search_range": (
+            f"{SEARCH_START_YEAR}-01-01 to {SEARCH_END_DATE}"
+            if SEARCH_START_YEAR else f"inception to {SEARCH_END_DATE}"
+        ),
         "databases_searched": list(queries.keys()),
         "databases_not_automated": ["PsycINFO (searched manually via OVID/EBSCOhost)"],
         "queries": queries,
         "records_per_database": per_db_counts,
         "deduplication": dedup_stats,
-        "filters_applied": {
-            "language": "English",
-            "subject": "Humans (PubMed only — other DBs filtered at screening)",
-            "excluded_pub_types": ["Editorial", "Letter", "Comment"],
-        },
-        "notes": (
-            "Case reports, reviews, and non-primary research are NOT excluded "
-            "at search stage per PRISMA 2020 recommendations. They are "
-            "excluded during title/abstract screening."
-        ),
+        "filters_applied": filters_applied,
+        "notes": search_scope_note,
     }
     meta_path = OUTPUT_DIR / "prisma_search_metadata.json"
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -673,6 +792,8 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
 
 def main() -> None:
     log.info(f"Search mode: {SEARCH_MODE}")
+    if SEARCH_MODE == "os_validation":
+        log.info("Using Boeckle et al. (2016) validation terms")
     log.info(f"Date range: {'inception' if SEARCH_START_YEAR is None else SEARCH_START_YEAR} "
              f"to {SEARCH_END_DATE}")
 

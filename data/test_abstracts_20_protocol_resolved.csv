@@ -1,0 +1,21 @@
+record_id,human_gold_decision,human_gold_exclusion_reason,human_gold_notes,title
+pubmed:20083798,include_candidate,,,The involuntary nature of conversion disorder.
+pubmed:20371508,include_candidate,,,Emotional stimuli and motor conversion disorder.
+pubmed:24258270,include_candidate,,,Neural correlates of recall of life events in conversion disorder.
+pubmed:17327215,exclude,case_report,Protocol-resolved: explicit single case study; exclude for title/abstract screening benchmark. Original annotation: include_candidate.,Imaging repressed memories in motor conversion disorder.
+europepmc:25859660,include_candidate,,,Emotion-motion interactions in conversion disorder: an FMRI study.
+pubmed:21935985,include_candidate,,,Aberrant supplementary motor complex and limbic activity during motor preparation in motor conversion disorder.
+pubmed:16186033,exclude,not_primary_research,"review article, likely exclude, but topic relevant and was in seed, so including as per instructions | Protocol-resolved: review/general overview; exclude for title/abstract screening benchmark. Original annotation: include_candidate.",Hysterical conversion and brain function.
+pubmed:17991812,include_candidate,,,FMRI in patients with motor conversion symptoms and controls with simulated weakness.
+pubmed:15099413,include_candidate,,sensory fucntional disorder,Functional magnetic resonance imaging of the cerebral response to visual stimulation in medically unexplained visual loss.
+pubmed:25285875,exclude,not_fnd,"DPD, not FND",Grey matter alterations in patients with depersonalization disorder: a voxel-based morphometry study.
+pubmed:26174617,exclude,not_fnd,completely different topic,Clinical and imaging findings in a rare case of sinus pericranii.
+pubmed:17018171,exclude,not_fnd,,Neural correlates of enhanced working-memory performance in dissociative disorder: a functional MRI study.
+pubmed:22329283,exclude,other,,[New knowledge on the diverticular disease of colon].
+pubmed:24039028,include_candidate,,"structural MRI, FMD",A structural MRI study of motor conversion disorder: evidence of reduction in thalamic volume.
+pubmed:16213162,include_candidate,,"fMRI, functional paralysis",Abnormal brain activation during movement observation in patients with conversion paralysis.
+pubmed:11944507,exclude,case_report,"case report, likely exclude, but topic relevant | Protocol-resolved from unclear: case report; topic relevant but case reports are excluded. Original annotation: unclear.","Conversion sensory symptoms associated with parietal lobe infarct: case report, diagnostic issues and brain mechanisms."
+pubmed:10472102,exclude,other,,"Correlation between curve severity, somatosensory evoked potentials, and magnetic resonance imaging in adolescent idiopathic scoliosis."
+pubmed:22664355,exclude,other,,A massive adenoid cystic carcinoma of nasal septum progressed into the skull base.
+pubmed:3488518,exclude,other,,PET before and after surgery for tumor-induced parkinsonism.
+pubmed:11781866,exclude,case_report,"psychogenic/functional potentially relevant, but case report, likely exclude | Protocol-resolved from unclear: case report; topic relevant but case reports are excluded. Original annotation: unclear.",Psychogenic paraplegia in a patient with normal electrophysiologic findings.
