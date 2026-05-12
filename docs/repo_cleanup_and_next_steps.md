@@ -1,6 +1,6 @@
 # Repo Cleanup And Next Steps
 
-Last updated: 2026-05-07
+Last updated: 2026-05-12
 
 ## What Was Cleaned
 
@@ -12,12 +12,21 @@ Last updated: 2026-05-07
 
 ## What Remains
 
-- `fnd_meta_search.py`: search runner with `update`, `full`, and `os_validation` modes.
+- `fnd_meta_search.py`: search runner with `update`, `full`, `os_validation`,
+  and `os_table_recall` modes.
 - `scripts/make_screening_test_set.py`: builds the 20-item pilot screening set.
 - `scripts/llm_screen_abstracts.py`: runs OpenAI-compatible screening calls.
 - `scripts/evaluate_llm_screening.py`: scores model outputs against human labels.
+- `scripts/validate_os_recall.py`: cross-references search results against
+  Boeckle et al. (2016) Table 1; produces a validation report and a JSONL
+  screening set with known OS includes marked.
 - `docs/llm_screening_protocol.md`: execution protocol for search and screening.
+- `docs/os_validation_report.md`: full validation report showing 33/35
+  in-scope studies recovered from the OS table.
 - `docs/references/`: source PDFs for the original study and adjacent meta-analyses.
+- `data/table_of_OS_studies.csv`: extracted Table 1 from the OS (49 studies).
+- `data/validation_screening_set.jsonl`: 709 records with 33 OS matches marked
+  as `include_candidate` for LLM pipeline sensitivity testing.
 - `data/test_abstracts_20.jsonl`: pilot screening fixture.
 - `data/test_abstracts_20_protocol_resolved.jsonl`: protocol-resolved benchmark labels.
 - `data/test_abstracts_20_protocol_resolved.csv`: human-readable version of the same labels.
@@ -25,24 +34,16 @@ Last updated: 2026-05-07
 - `data/evaluation_disagreements_*.jsonl`: record-level disagreements for inspection.
 - `.env.example`: local env template for API keys.
 
-## Why This Structure
-
-The repo now separates three things that were previously mixed together:
-
-1. Source code and scripts.
-2. Reference material and protocol notes.
-3. Generated benchmark data and evaluation summaries.
-
-That makes it easier to rerun the pipeline without carrying old search dumps and
-local cache files in git.
-
 ## What To Do Next
 
-1. Finish manual screening labels on a larger pilot set if needed.
-2. Add manual WoS and PsycINFO records when institutional access is available.
-3. Decide whether `unclear` in the benchmark should continue to behave as
+1. Run LLM screening on `data/validation_screening_set.jsonl` (709 records)
+   and evaluate sensitivity on the 33 known OS includes.
+2. If sensitivity is acceptable, run the production search
+   (`--full` or `--update` with no cutoff date) for the actual meta-analysis.
+3. Add manual WoS and PsycINFO records when institutional access is available.
+4. Decide whether `unclear` in the benchmark should continue to behave as
    protocol-negative for scoring.
-4. Expand the evaluator if you want per-label recall by subtype or per-model
+5. Expand the evaluator if you want per-label recall by subtype or per-model
    confusion tables.
-5. If a provider keeps returning 400s, keep the same script but disable
-   `response_format` and capture the raw body in the output file.
+6. Investigate the 2 in-scope misses (Atmaca [84], Bonilha [88]) via
+   citation chasing to ensure coverage.
