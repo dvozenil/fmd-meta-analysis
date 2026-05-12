@@ -14,6 +14,9 @@ Search modes:
   - "full":   inception to present (structural track — no prior meta-analysis)
   - "os_validation": inception to August 2015 using terms matched as closely
     as practical to Boeckle et al. (2016), for validation only
+  - "os_table_recall": inception to August 2015 with broadened terms
+    (no language filter at search stage) to maximise recovery of the 49
+    studies in Boeckle et al. Table 1
 
 Databases covered:
   - PubMed (NCBI E-utilities)     — free, API key recommended
@@ -36,6 +39,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -64,13 +68,14 @@ def _parse_args() -> argparse.Namespace:
         description="FND Neuroimaging Meta-Analysis — PRISMA-compliant database search"
     )
     parser.add_argument(
-        "--mode", choices=["update", "full", "os_validation"],
+        "--mode", choices=["update", "full", "os_validation", "os_table_recall"],
         default=None,
         help="Search mode (overrides FND_SEARCH_MODE env var)",
     )
     parser.add_argument("--update", action="store_const", const="update", dest="mode")
     parser.add_argument("--full", action="store_const", const="full", dest="mode")
     parser.add_argument("--os_validation", action="store_const", const="os_validation", dest="mode")
+    parser.add_argument("--os_table_recall", action="store_const", const="os_table_recall", dest="mode")
     return parser.parse_args()
 
 _cli_args = _parse_args()
@@ -80,11 +85,13 @@ _cli_args = _parse_args()
 # ---------------------------------------------------------------------------
 
 # Search mode:
-#   "update"        — 2015 onward (functional imaging track, updating Boeckle)
-#   "full"          — inception to present (structural imaging track)
-#   "os_validation" — inception to August 2015 using original-study terms
+#   "update"          — 2015 onward (functional imaging track, updating Boeckle)
+#   "full"            — inception to present (structural imaging track)
+#   "os_validation"   — inception to August 2015 using original-study terms
+#   "os_table_recall" — inception to August 2015, broadened terms, no language filter
 SEARCH_MODE = _cli_args.mode or os.getenv("FND_SEARCH_MODE", "update")
-VALID_SEARCH_MODES = {"update", "full", "os_validation"}
+VALID_SEARCH_MODES = {"update", "full", "os_validation", "os_table_recall"}
+_VALIDATION_MODES = {"os_validation", "os_table_recall"}
 if SEARCH_MODE not in VALID_SEARCH_MODES:
     raise ValueError(
         f"Unknown FND_SEARCH_MODE={SEARCH_MODE!r}; expected one of "
@@ -93,7 +100,7 @@ if SEARCH_MODE not in VALID_SEARCH_MODES:
 
 SEARCH_START_YEAR: int | None = 2015 if SEARCH_MODE == "update" else None
 DEFAULT_SEARCH_END_DATE = (
-    "2015/08/31" if SEARCH_MODE == "os_validation"
+    "2015/08/31" if SEARCH_MODE in _VALIDATION_MODES
     else datetime.now().strftime("%Y/%m/%d")
 )
 SEARCH_END_DATE = os.getenv("FND_SEARCH_END_DATE", DEFAULT_SEARCH_END_DATE)
@@ -251,11 +258,79 @@ OS_IMAGING_TERMS = [
     "PET",
 ]
 
+# Broadened terms for reproducing the 49-study Table 1 from Boeckle et al.
+# The published search string is narrower than what Table 1 actually contains
+# (e.g. SPECT, EEG, MEG, CT, hysteria, psychogenic, somatoform, body
+# dysmorphic, and PNES studies all appear in the table but not in the query).
+OS_RECALL_FND_TERMS = [
+    # Original OS terms
+    "dissociative disorder",
+    "functional disorder",
+    "conversion disorder",
+    # Historical / legacy (compound phrases — bare "hysteria"/"hysterical" too broad)
+    "hysterical conversion",
+    "hysterical paralysis",
+    "hysterical anaesthesia",
+    "motor conversion",
+    "sensory conversion",
+    "sensorimotor conversion",
+    # Psychogenic spectrum (compound phrases — bare "psychogenic" too broad)
+    "psychogenic movement disorder",
+    "psychogenic non-epileptic seizure",
+    "psychogenic nonepileptic seizure",
+    "psychogenic tremor",
+    "psychogenic dystonia",
+    "psychogenic paralysis",
+    # Somatoform (as phrase — bare "somatoform" too broad)
+    "somatoform disorder",
+    "somatization disorder",
+    # Body dysmorphic
+    "body dysmorphic disorder",
+    # Seizure variants
+    "PNES",
+    "non-epileptic seizure",
+    "nonepileptic seizure",
+    "non-epileptic attack",
+    "nonepileptic attack",
+    "pseudoseizure",
+    "pseudoseizures",
+    # Dissociative subtypes
+    "dissociative identity disorder",
+    "dissociative convulsion",
+    # Other
+    "astasia-abasia",
+    "idiopathic dystonia",
+    "functional neurological",
+]
+
+OS_RECALL_IMAGING_TERMS = [
+    # Original OS terms
+    "neuro imaging",
+    "neuroimaging",
+    "magnetic resonance imaging",
+    "fMRI",
+    "MRI",
+    "VBM",
+    "PET",
+    # Additional imaging modalities present in Table 1
+    "SPECT",
+    "single photon emission",
+    "EEG",
+    "electroencephalography",
+    "MEG",
+    "magnetoencephalography",
+    "computed tomography",
+    "positron emission tomography",
+    "brain imaging",
+]
+
 
 def _active_terms() -> tuple[list[str], list[str]]:
     """Return FND and imaging term lists for the current search mode."""
     if SEARCH_MODE == "os_validation":
         return OS_FND_TERMS, OS_IMAGING_TERMS
+    if SEARCH_MODE == "os_table_recall":
+        return OS_RECALL_FND_TERMS, OS_RECALL_IMAGING_TERMS
     return FND_TERMS, IMAGING_TERMS
 
 
@@ -302,12 +377,13 @@ def _build_pubmed_text_block(terms: list[str]) -> str:
 def build_pubmed_query() -> str:
     """PubMed syntax: uses [MeSH Terms], [tiab], field tags."""
     fnd_terms, imaging_terms = _active_terms()
-    if SEARCH_MODE == "os_validation":
+    if SEARCH_MODE in _VALIDATION_MODES:
         fnd_block = _build_pubmed_text_block(fnd_terms)
-        imaging_block = (
-            _build_pubmed_text_block(imaging_terms)
-            + ' OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])'
-        )
+        imaging_block = _build_pubmed_text_block(imaging_terms)
+        if SEARCH_MODE == "os_validation":
+            imaging_block += (
+                ' OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])'
+            )
         return f"({fnd_block}) AND ({imaging_block}) {_date_filter_pubmed()}"
 
     fnd_block = (
@@ -341,7 +417,8 @@ def build_wos_query() -> str:
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     year_range = _date_filter_year_range().replace(" TO ", "-")
     date_part = f" AND PY={year_range}"
-    return f'TS=({fnd}) AND TS=({imag}) AND LA=(English){date_part}'
+    lang_part = "" if SEARCH_MODE == "os_table_recall" else " AND LA=(English)"
+    return f'TS=({fnd}) AND TS=({imag}){lang_part}{date_part}'
 
 
 def build_europepmc_query() -> str:
@@ -352,9 +429,10 @@ def build_europepmc_query() -> str:
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = f" AND (PUB_YEAR:[{_date_filter_year_range()}])"
+    lang_part = '' if SEARCH_MODE == "os_table_recall" else ' AND (LANG:"eng")'
     return (
-        f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag})) '
-        f'AND (LANG:"eng"){date_part}'
+        f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag}))'
+        f'{lang_part}{date_part}'
     )
 
 
@@ -366,9 +444,10 @@ def build_scopus_query() -> str:
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = _scopus_date_filter()
+    lang_part = "" if SEARCH_MODE == "os_table_recall" else " AND LANGUAGE(english)"
     return (
-        f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag})){date_part} '
-        f'AND LANGUAGE(english)'
+        f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag})){date_part}'
+        f'{lang_part}'
     )
 
 
@@ -396,12 +475,16 @@ class Record:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
+    def _title_year_key(self) -> str:
+        """Title+year-based dedup key (ignores DOI)."""
+        title_norm = "".join(c.lower() for c in self.title if c.isalnum())[:80]
+        return f"tyh:{hashlib.md5(f'{title_norm}_{self.year}'.encode()).hexdigest()}"
+
     def dedup_key(self) -> str:
         """Preferred dedup key: DOI (normalized) > title+year hash."""
         if self.doi:
             return f"doi:{self.doi.lower().strip()}"
-        title_norm = "".join(c.lower() for c in self.title if c.isalnum())[:80]
-        return f"tyh:{hashlib.md5(f'{title_norm}_{self.year}'.encode()).hexdigest()}"
+        return self._title_year_key()
 
 
 # ---------------------------------------------------------------------------
@@ -755,24 +838,70 @@ class ScopusClient:
 # DEDUPLICATION + EXPORT
 # ---------------------------------------------------------------------------
 
+def _titles_similar(title_a: str, title_b: str, threshold: float = 0.4) -> bool:
+    """Return True if two titles are similar enough to be the same work.
+
+    Uses Jaccard similarity on word sets (words >= 3 chars, lowered).
+    A low threshold (0.4) avoids false merges while still catching
+    minor punctuation / transliteration differences.
+    """
+    def _words(t: str) -> set[str]:
+        return {w.lower() for w in re.findall(r"[a-zA-Z0-9]{3,}", t)}
+
+    w1, w2 = _words(title_a), _words(title_b)
+    if not w1 or not w2:
+        return True
+    return len(w1 & w2) / len(w1 | w2) >= threshold
+
+
 def deduplicate(records: list[Record]) -> tuple[list[Record], dict[str, int]]:
     """Dedup by DOI when available, else by normalized title+year hash.
 
-    First-pass dedup only; Rayyan/ASReview will refine further.
+    When two records share a DOI but have substantially different titles,
+    both are kept and a warning is logged (likely a DOI metadata error in
+    one database).  First-pass dedup only; Rayyan/ASReview will refine.
     """
     seen: dict[str, Record] = {}
     dup_sources: dict[str, list[str]] = {}
+    doi_collisions: list[tuple[Record, Record]] = []
+
     for rec in records:
         key = rec.dedup_key()
         if key not in seen:
             seen[key] = rec
             dup_sources[key] = [rec.source_db]
+        elif key.startswith("doi:"):
+            existing = seen[key]
+            if not _titles_similar(existing.title, rec.title):
+                fallback = rec._title_year_key()
+                if fallback not in seen:
+                    seen[fallback] = rec
+                    dup_sources[fallback] = [rec.source_db]
+                    doi_collisions.append((existing, rec))
+                else:
+                    dup_sources[fallback].append(rec.source_db)
+            else:
+                dup_sources[key].append(rec.source_db)
         else:
             dup_sources[key].append(rec.source_db)
+
+    if doi_collisions:
+        log.warning(
+            f"DOI collision(s) detected — {len(doi_collisions)} record pair(s) "
+            "had matching DOIs but different titles; both kept:"
+        )
+        for existing, new in doi_collisions:
+            log.warning(
+                f"  DOI {existing.doi}:\n"
+                f"    kept   : '{existing.title}' ({existing.source_db})\n"
+                f"    rescued: '{new.title}' ({new.source_db})"
+            )
+
     stats = {
         "total_raw": len(records),
         "unique": len(seen),
         "duplicates_removed": len(records) - len(seen),
+        "doi_collisions_rescued": len(doi_collisions),
     }
     return list(seen.values()), stats
 
@@ -849,6 +978,21 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
                 "screening to stay close to the original study workflow."
             ),
         }
+    elif SEARCH_MODE == "os_table_recall":
+        search_scope_note = (
+            "Table-recall mode uses broadened search terms to maximise "
+            "recovery of the 49 studies in Boeckle et al. Table 1. Language "
+            "filters are NOT applied at the search stage; apply English-"
+            "language screening downstream to match the original workflow."
+        )
+        filters_applied = {
+            "language": "None at search stage — apply during screening",
+            "date": f"inception to {SEARCH_END_DATE}",
+            "screening_filters": (
+                "Language (English), human/adult, and primary-research "
+                "criteria should all be applied during screening."
+            ),
+        }
     else:
         search_scope_note = (
             "Case reports, reviews, and non-primary research are NOT excluded "
@@ -861,13 +1005,15 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
             "excluded_pub_types": ["Editorial", "Letter", "Comment"],
         }
 
+    _search_profiles = {
+        "os_validation": "Boeckle et al. 2016 validation approximation",
+        "os_table_recall": "Boeckle et al. 2016 Table 1 recall (broadened terms)",
+    }
     prisma_meta = {
         "run_id": RUN_ID,
         "search_mode": SEARCH_MODE,
-        "search_profile": (
-            "Boeckle et al. 2016 validation approximation"
-            if SEARCH_MODE == "os_validation"
-            else "expanded FND neuroimaging protocol"
+        "search_profile": _search_profiles.get(
+            SEARCH_MODE, "expanded FND neuroimaging protocol"
         ),
         "search_date": datetime.now(timezone.utc).isoformat(),
         "search_range": (
@@ -896,6 +1042,8 @@ def main() -> None:
     log.info(f"Search mode: {SEARCH_MODE}")
     if SEARCH_MODE == "os_validation":
         log.info("Using Boeckle et al. (2016) validation terms")
+    elif SEARCH_MODE == "os_table_recall":
+        log.info("Using broadened terms for Table 1 recall (no language filter at search stage)")
     log.info(f"Date range: {'inception' if SEARCH_START_YEAR is None else SEARCH_START_YEAR} "
              f"to {SEARCH_END_DATE}")
 
@@ -939,7 +1087,8 @@ def main() -> None:
     log.info(f"Total raw records across all DBs: {len(all_records)}")
     deduped, dedup_stats = deduplicate(all_records)
     log.info(f"After dedup: {len(deduped)} unique records "
-             f"({dedup_stats['duplicates_removed']} duplicates removed)")
+             f"({dedup_stats['duplicates_removed']} duplicates removed, "
+             f"{dedup_stats['doi_collisions_rescued']} DOI collisions rescued)")
 
     # Fetch abstracts only for deduplicated Scopus-sourced records missing them.
     # PubMed/Europe PMC already include abstracts; duplicates have been removed.
