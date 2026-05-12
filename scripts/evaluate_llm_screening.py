@@ -88,14 +88,20 @@ def decision_to_binary(decision: str | None, unclear_policy: str) -> bool | None
 
 def load_gold(path: Path) -> dict[str, dict[str, Any]]:
     gold: dict[str, dict[str, Any]] = {}
+    skipped = 0
     for row in read_jsonl(path):
         record_id = row.get("record_id")
         if not record_id:
             raise ValueError(f"Gold row missing record_id: {row}")
         decision = row.get("human_gold_decision")
+        if decision is None:
+            skipped += 1
+            continue
         if decision not in {"include_candidate", "exclude", "unclear"}:
             raise ValueError(f"Bad human_gold_decision for {record_id}: {decision!r}")
         gold[record_id] = row
+    if skipped:
+        print(f"Note: skipped {skipped} records with no gold label")
     return gold
 
 

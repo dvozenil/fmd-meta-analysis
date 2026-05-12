@@ -9,7 +9,7 @@ Updated and extended meta-analysis of neuroimaging findings in Functional Neurol
 | **PI** | Petr Sojka |
 | **Student lead** | David Voženílek |
 | **Notion workspace** | [Project hub](https://app.notion.com/p/352cf8786b8180c0b2d4ecb65b85c14d) · [Protocol](https://app.notion.com/p/352cf8786b81816fb261cff71e17249f) |
-| **Status** | Planning / search strategy development |
+| **Status** | Search validation / LLM screening pipeline |
 
 ## What this extends
 
@@ -27,9 +27,19 @@ Boeckle et al. (2016) conducted an ALE meta-analysis of **functional** neuroimag
 ```
 fnd_meta_search.py      # PRISMA-compliant API search script
 requirements.txt        # Python dependencies
-scripts/                # Test-set sampling and LLM screening helpers
-docs/                   # Execution notes and validation protocol
-data/                   # Screening fixtures and evaluation summaries
+scripts/
+  make_screening_test_set.py   # Build small screening test sets
+  llm_screen_abstracts.py      # LLM title/abstract screening
+  evaluate_llm_screening.py    # Score LLM output vs human labels
+  validate_os_recall.py        # Cross-reference results against OS Table 1
+docs/
+  llm_screening_protocol.md    # Screening execution protocol
+  os_validation_report.md      # OS recall validation report
+data/
+  table_of_OS_studies.csv              # OS Table 1 (49 studies)
+  validation_screening_set.jsonl       # 709 records with 33 OS matches marked
+  test_abstracts_20*.jsonl             # Pilot screening fixtures
+  evaluation_summary_*.csv             # Model comparison tables
 ```
 
 Source PDFs live in [docs/references/](docs/references/README.md).
@@ -38,18 +48,30 @@ Source PDFs live in [docs/references/](docs/references/README.md).
 
 `fnd_meta_search.py` queries PubMed, Europe PMC, Web of Science, and Scopus via their APIs. PsycINFO is searched manually (no REST API).
 
+IMPORTANT: Institutional VPN must be connected for Scopus API to retrieve abstracts.
+
 ### Search modes
 
 ```bash
 # Functional track: 2015 onward (updating the original study)
-FND_SEARCH_MODE=update python fnd_meta_search.py
+python fnd_meta_search.py --update
 
 # Structural track: inception to present (no prior comprehensive ALE)
-FND_SEARCH_MODE=full python fnd_meta_search.py
+python fnd_meta_search.py --full
 
-# Validation track: approximate Boeckle et al. (2016) terms to August 2015
-FND_SEARCH_MODE=os_validation python fnd_meta_search.py
+# Validation: approximate Boeckle et al. (2016) terms to August 2015
+python fnd_meta_search.py --os_validation
+
+# Table recall: broadened terms for OS Table 1 recovery (reference only)
+python fnd_meta_search.py --os_table_recall
+
+# Run full search with a custom end date (e.g. OS cutoff for validation)
+FND_SEARCH_END_DATE=2015/08/31 python fnd_meta_search.py --full
 ```
+
+The `os_table_recall` mode exists as a reference for how we attempted to
+replicate the OS search and why exact replication is not viable. See
+[docs/os_validation_report.md](docs/os_validation_report.md) for details.
 
 ### Setup
 
@@ -87,6 +109,20 @@ Documented in the [Notion protocol page](https://app.notion.com/p/352cf8786b8181
 - **Risk of bias:** Newcastle-Ottawa Scale + neuroimaging-specific quality supplement
 - **Screening:** AI-assisted dual screening (LLM + human), validated against original study results
 - **Citation chasing:** backward (reference lists) + forward (Google Scholar "Cited by")
+
+## Search validation
+
+We validated our search strategy by running the `full` production terms with the
+OS cutoff date (inception to 2015/08/31) and cross-referencing against the 49
+studies in Boeckle et al. Table 1. Result: **33/35 in-scope studies recovered**.
+The 16 unrecovered studies are all out of scope (EEG/MEG/CT imaging or non-FND
+diagnoses like body dysmorphic disorder). See
+[docs/os_validation_report.md](docs/os_validation_report.md) for the full
+analysis.
+
+The validation set (`data/validation_screening_set.jsonl`) has the 33 matched
+OS studies pre-labeled as `include_candidate` for LLM pipeline sensitivity
+testing.
 
 For the current working state, see [docs/repo_cleanup_and_next_steps.md](docs/repo_cleanup_and_next_steps.md).
 
