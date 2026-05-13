@@ -1,8 +1,0 @@
-model_file,evaluated,tp,fp,tn,fn,sensitivity,specificity,precision,accuracy,f1,dropped_gold,missing_or_error,schema_warning_rows
-llm_screening_results_groq_qwen3-32b.jsonl,20,10,1,6,3,0.7692307692307693,0.8571428571428571,0.9090909090909091,0.8,0.8333333333333333,0,0,0
-llm_screening_results_gemini-3-flash-lite.jsonl,20,9,0,7,4,0.6923076923076923,1.0,1.0,0.8,0.8181818181818181,0,0,0
-llm_screening_results_lmstudio_qwen3.6-35b-a3b.jsonl,20,9,0,7,4,0.6923076923076923,1.0,1.0,0.8,0.8181818181818181,0,0,9
-llm_screening_results_openrouter_hy3-preview.jsonl,20,9,0,7,4,0.6923076923076923,1.0,1.0,0.8,0.8181818181818181,0,0,0
-llm_screening_results_gemma-31B.jsonl,20,9,1,6,4,0.6923076923076923,0.8571428571428571,0.9,0.75,0.7826086956521738,0,0,0
-llm_screening_results_lmstudio.jsonl,20,9,2,5,4,0.6923076923076923,0.7142857142857143,0.8181818181818182,0.7,0.7500000000000001,0,0,1
-llm_screening_results_gemini-3-flash.jsonl,17,7,1,5,4,0.6363636363636364,0.8333333333333334,0.875,0.7058823529411765,0.7368421052631579,0,3,1
