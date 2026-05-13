@@ -32,31 +32,45 @@ def _words(text: str) -> set[str]:
     return {w.lower() for w in re.findall(r"[a-zA-Z0-9]{3,}", text)}
 
 
-FND_KEYWORDS = frozenset({
-    "conversion", "dissociative", "functional", "psychogenic",
-    "hysterical", "hysteria", "somatoform", "somatization",
-    "dysmorphic", "pnes", "seizure", "epileptic", "dystonia",
-    "tremor", "paralysis", "motor", "sensory", "astasia",
-    "movement", "neurological", "nonepileptic",
-})
+def _normalize_doi(doi: str | None) -> str:
+    """Lowercase, strip URL prefix, trailing punctuation."""
+    if not doi:
+        return ""
+    doi = doi.strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+        if doi.startswith(prefix):
+            doi = doi[len(prefix):]
+    return doi.rstrip(".")
+
+
+def _title_words(text: str) -> set[str]:
+    """Extract lowercased words (>=3 chars) from a title for Jaccard matching."""
+    return {w.lower() for w in re.findall(r"[a-zA-Z0-9\u00C0-\u024F]{3,}", text)}
+
+
+def _title_jaccard(a: str, b: str) -> float:
+    wa, wb = _title_words(a), _title_words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
 
 
 def _extract_surname(study_field: str) -> str:
+    """Unicode-aware surname extraction from 'Author, et al. [N]'."""
     s = study_field.lstrip("a")
-    m = re.match(r"([A-Za-z\s\-]+)", s)
+    m = re.match(r"([A-Za-z\u00C0-\u024F\s\-]+)", s)
     return m.group(1).strip().lower() if m else ""
 
 
-def _match_record(surname: str, disorder: str,
-                  rec_authors: str, rec_title: str) -> bool:
-    """True if surname is in the author list and there is FND-relevant
-    keyword overlap between the OS disorder label and the record title."""
+def _surname_is_author(surname: str, rec_authors: str) -> bool:
+    """Check if surname appears as a whole token in the author list.
+
+    Handles multi-word surnames (van Beilen, de Lange) by checking that the
+    full surname appears as a contiguous substring bounded by non-letter chars.
+    """
     authors_lower = rec_authors.lower()
-    if surname not in authors_lower and surname.replace(" ", "") not in authors_lower:
-        return False
-    title_words = _words(rec_title)
-    disorder_words = _words(disorder)
-    return bool(disorder_words & title_words) or bool(FND_KEYWORDS & title_words)
+    pattern = r"(?<![a-z\u00c0-\u024f])" + re.escape(surname) + r"(?![a-z\u00c0-\u024f])"
+    return bool(re.search(pattern, authors_lower))
 
 
 def _categorize_miss(disorder: str, imaging: str) -> str:
@@ -96,16 +110,25 @@ CATEGORY_LABELS = {
 # ---------------------------------------------------------------------------
 
 def load_os_table(path: Path) -> list[dict[str, str]]:
+    """Load the OS table — supports both original and resolved CSV formats."""
     with open(path, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
     out = []
+    resolved = "ref_doi" in rows[0] if rows else False
     for row in rows:
-        out.append({
-            "study": row["Study"].strip().strip('"'),
-            "surname": _extract_surname(row["Study"].strip().strip('"')),
-            "disorder": row["Disorder"].strip(),
-            "imaging": row["Imaging method"].strip(),
-        })
+        study = row.get("study") or row.get("Study", "")
+        study = study.strip().strip('"')
+        entry: dict[str, str] = {
+            "study": study,
+            "surname": _extract_surname(study),
+            "disorder": row.get("disorder") or row.get("Disorder", ""),
+            "imaging": row.get("imaging") or row.get("Imaging method", ""),
+        }
+        if resolved:
+            entry["ref_doi"] = _normalize_doi(row.get("ref_doi", ""))
+            entry["ref_year"] = row.get("ref_year", "")
+            entry["ref_unstructured"] = row.get("ref_unstructured", "")
+        out.append(entry)
     return out
 
 
@@ -122,32 +145,100 @@ def match_os_studies(
     os_studies: list[dict[str, str]],
     search_records: list[dict[str, Any]],
 ) -> tuple[list[dict], list[dict]]:
-    found, not_found = [], []
-    used_indices: set[int] = set()
+    """Match OS studies to search records using a three-pass strategy.
 
+    Pass 1: DOI match (exact, highest confidence).
+    Pass 2: Title Jaccard similarity >= 0.6 AND author surname present.
+    Pass 3: Surname whole-word match + year + keyword overlap (legacy fallback).
+    """
+    found: list[dict] = []
+    not_found: list[dict] = []
+    used_indices: set[int] = set()
+    unmatched_studies: list[dict] = []
+
+    has_ref_doi = any(s.get("ref_doi") for s in os_studies)
+
+    rec_doi_index: dict[str, int] = {}
+    if has_ref_doi:
+        for idx, rec in enumerate(search_records):
+            doi = _normalize_doi(rec.get("doi", ""))
+            if doi:
+                rec_doi_index[doi] = idx
+
+    # --- Pass 1: DOI match ---
     for study in os_studies:
-        matched_rec = None
-        matched_idx = None
+        ref_doi = study.get("ref_doi", "")
+        if ref_doi and ref_doi in rec_doi_index:
+            idx = rec_doi_index[ref_doi]
+            if idx not in used_indices:
+                used_indices.add(idx)
+                entry = {**study, "matched_record": search_records[idx], "match_method": "doi"}
+                found.append(entry)
+                continue
+        unmatched_studies.append(study)
+
+    # --- Pass 2: Title Jaccard + surname ---
+    still_unmatched: list[dict] = []
+    for study in unmatched_studies:
+        ref_text = study.get("ref_unstructured", "")
+        if not ref_text:
+            still_unmatched.append(study)
+            continue
+
+        best_idx: int | None = None
+        best_score = 0.0
         for idx, rec in enumerate(search_records):
             if idx in used_indices:
                 continue
-            if _match_record(
-                study["surname"],
-                study["disorder"],
-                rec.get("authors", ""),
-                rec.get("title", ""),
-            ):
-                matched_rec = rec
+            rec_title = rec.get("title", "")
+            score = _title_jaccard(ref_text, rec_title)
+            if score > best_score:
+                surname = study["surname"]
+                if _surname_is_author(surname, rec.get("authors", "")):
+                    best_score = score
+                    best_idx = idx
+
+        if best_score >= 0.6 and best_idx is not None:
+            used_indices.add(best_idx)
+            entry = {**study, "matched_record": search_records[best_idx],
+                     "match_method": f"title_jaccard({best_score:.2f})"}
+            found.append(entry)
+        else:
+            still_unmatched.append(study)
+
+    # --- Pass 3: Surname + year + keyword fallback ---
+    fnd_keywords = frozenset({
+        "conversion", "dissociative", "functional", "psychogenic",
+        "hysterical", "hysteria", "somatoform", "somatization",
+        "dysmorphic", "pnes", "seizure", "epileptic", "dystonia",
+        "tremor", "paralysis", "motor", "sensory", "astasia",
+        "movement", "neurological", "nonepileptic",
+    })
+    for study in still_unmatched:
+        surname = study["surname"]
+        ref_year = study.get("ref_year", "")
+        disorder_words = _words(study["disorder"])
+
+        matched_idx: int | None = None
+        for idx, rec in enumerate(search_records):
+            if idx in used_indices:
+                continue
+            if not _surname_is_author(surname, rec.get("authors", "")):
+                continue
+            if ref_year and str(rec.get("year", "")) != ref_year:
+                continue
+            title_words = _words(rec.get("title", ""))
+            if disorder_words & title_words or fnd_keywords & title_words:
                 matched_idx = idx
                 break
 
-        entry = {**study}
-        if matched_rec is not None:
-            assert matched_idx is not None
+        if matched_idx is not None:
             used_indices.add(matched_idx)
-            entry["matched_record"] = matched_rec
+            entry = {**study, "matched_record": search_records[matched_idx],
+                     "match_method": "surname_year_keyword"}
             found.append(entry)
         else:
+            entry = {**study}
             entry["category"] = _categorize_miss(study["disorder"], study["imaging"])
             not_found.append(entry)
 
@@ -242,19 +333,21 @@ def generate_report(
         f"| **After deduplication** | **{dedup_count}** |",
         "",
         "We then matched the deduplicated results against all 49 OS Table 1 studies",
-        "by author surname and title/disorder keyword overlap.",
+        "using DOIs resolved from the CrossRef API, with title-similarity and",
+        "author-surname fallbacks.",
         "",
         f"## Results: {len(found)}/{total_os} studies found",
         "",
         "### Matched studies",
         "",
-        "| # | OS study | Disorder | Source DB |",
-        "| ---: | --- | --- | --- |",
+        "| # | OS study | Disorder | Source DB | Match method |",
+        "| ---: | --- | --- | --- | --- |",
     ])
     for i, s in enumerate(found, 1):
         rec = s["matched_record"]
+        method = s.get("match_method", "legacy")
         lines.append(
-            f"| {i} | {s['study']} | {s['disorder']} | {rec.get('source_db', '')} |"
+            f"| {i} | {s['study']} | {s['disorder']} | {rec.get('source_db', '')} | {method} |"
         )
 
     lines.extend([
@@ -376,7 +469,7 @@ def main() -> None:
         help="Path to the search run directory (e.g. fnd_search_20260512_154542)",
     )
     parser.add_argument(
-        "--os-table", type=Path, default=Path("data/table_of_OS_studies.csv"),
+        "--os-table", type=Path, default=Path("data/table_of_OS_studies_resolved.csv"),
     )
     parser.add_argument(
         "--output-report", type=Path, default=Path("docs/os_validation_report.md"),
