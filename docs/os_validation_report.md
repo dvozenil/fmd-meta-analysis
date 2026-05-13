@@ -1,6 +1,6 @@
 # Original Study Search Validation Report
 
-Generated: 2026-05-12 14:07 UTC  
+Generated: 2026-05-13 17:16 UTC  
 Search run: `fnd_search_20260512_154542`
 
 ## Context
@@ -62,47 +62,48 @@ own production search strategy by running it with the OS cutoff date:
 | **After deduplication** | **709** |
 
 We then matched the deduplicated results against all 49 OS Table 1 studies
-by author surname and title/disorder keyword overlap.
+using DOIs resolved from the CrossRef API, with title-similarity and
+author-surname fallbacks.
 
 ## Results: 33/49 studies found
 
 ### Matched studies
 
-| # | OS study | Disorder | Source DB |
-| ---: | --- | --- | --- |
-| 1 | Atmaca, et al. [82] | motor conversion | pubmed |
-| 2 | Aybek, et al. [29] | motor conversion | pubmed |
-| 3 | aAybek, et al. [52] | motor conversion | pubmed |
-| 4 | aAybek, et al. [47] | motor conversion | pubmed |
-| 5 | Burke, et al. [89] | sensory conversion | pubmed |
-| 6 | Burgmer, et al. [90] | motor conversion | pubmed |
-| 7 | Cojan, et al. [19] | motor conversion | pubmed |
-| 8 | aCzarnecki, et al. [60] | motor conversion | pubmed |
-| 9 | ade Lange, et al. [16] | motor conversion | pubmed |
-| 10 | ade Lange, et al. [64] | motor conversion | pubmed |
-| 11 | de Lange, et al. [21] | motor conversion | pubmed |
-| 12 | de Ruiter, et al. [92] | non clinical dissociative experiences | pubmed |
-| 13 | Devinsky, et al. [93] | C-NES | pubmed |
-| 14 | aElzinga, et al. [46] | motor conversion | pubmed |
-| 15 | Felmingham, et al. [94] | dissociative PTSD | pubmed |
-| 16 | Ghaffar, et al. [62] | motor conversion | pubmed |
-| 17 | Krüger, et al. [103] | dissociation DES | pubmed |
-| 18 | Labate, et al. [28] | PNES | pubmed |
-| 19 | Mailis-Gagnon, et al. [24] | hysterical anaesthesia | pubmed |
-| 20 | Moser, et al. [104] | dissociation | pubmed |
-| 21 | Nicholson, et al. [105] | motor conversion | pubmed |
-| 22 | Roelofs, et al. [66] | motor conversion | pubmed |
-| 23 | Sar, et al. [107] | dissociative identity disorder | pubmed |
-| 24 | aSpence, et al. [20] | motor conversion | pubmed |
-| 25 | aStone, et al. [74] | motor conversion | pubmed |
-| 26 | avan Beilen, et al. [50] | motor conversion | pubmed |
-| 27 | van Der Kruijs, et al. [108] | PNES | pubmed |
-| 28 | aVoon, et al. [43] | conversion tremor, dystonia, gait disorder | pubmed |
-| 29 | aVoon, et al. [27] | motor conversion | pubmed |
-| 30 | Voon, et al. [25] | motor conversion | pubmed |
-| 31 | aVuilleumier, et al. [22] | sensorimotor conversion | pubmed |
-| 32 | Werring, et al. [109] | sensory conversion | pubmed |
-| 33 | Yazici, et al. [110] | Astasia-Abasia | pubmed |
+| # | OS study | Disorder | Source DB | Match method |
+| ---: | --- | --- | --- | --- |
+| 1 | Atmaca, et al. [82] | motor conversion | pubmed | doi |
+| 2 | Aybek, et al. [29] | motor conversion | pubmed | doi |
+| 3 | aAybek, et al. [52] | motor conversion | europepmc | doi |
+| 4 | aAybek, et al. [47] | motor conversion | pubmed | doi |
+| 5 | Benbadis, et al. [85] | syncope of unknown origin | scopus | doi |
+| 6 | Burke, et al. [89] | sensory conversion | pubmed | doi |
+| 7 | Burgmer, et al. [90] | motor conversion | pubmed | doi |
+| 8 | Cojan, et al. [19] | motor conversion | pubmed | doi |
+| 9 | aCzarnecki, et al. [60] | motor conversion | pubmed | doi |
+| 10 | ade Lange, et al. [16] | motor conversion | pubmed | doi |
+| 11 | ade Lange, et al. [64] | motor conversion | pubmed | doi |
+| 12 | de Lange, et al. [21] | motor conversion | pubmed | doi |
+| 13 | de Ruiter, et al. [92] | non clinical dissociative experiences | pubmed | doi |
+| 14 | Devinsky, et al. [93] | C-NES | pubmed | doi |
+| 15 | aElzinga, et al. [46] | motor conversion | pubmed | doi |
+| 16 | Felmingham, et al. [94] | dissociative PTSD | pubmed | doi |
+| 17 | Ghaffar, et al. [62] | motor conversion | pubmed | doi |
+| 18 | Karatas, et al. [101] | PNES | scopus | doi |
+| 19 | Knyazeva, et al. [102] | PNES | scopus | doi |
+| 20 | Labate, et al. [28] | PNES | pubmed | doi |
+| 21 | Mailis-Gagnon, et al. [24] | hysterical anaesthesia | pubmed | doi |
+| 22 | Moser, et al. [104] | dissociation | pubmed | doi |
+| 23 | Nicholson, et al. [105] | motor conversion | pubmed | doi |
+| 24 | Sar, et al. [107] | dissociative identity disorder | pubmed | doi |
+| 25 | aStone, et al. [74] | motor conversion | pubmed | doi |
+| 26 | avan Beilen, et al. [50] | motor conversion | pubmed | doi |
+| 27 | van Der Kruijs, et al. [108] | PNES | pubmed | doi |
+| 28 | aVoon, et al. [43] | conversion tremor, dystonia, gait disorder | pubmed | doi |
+| 29 | aVoon, et al. [27] | motor conversion | pubmed | doi |
+| 30 | Voon, et al. [25] | motor conversion | pubmed | doi |
+| 31 | aVuilleumier, et al. [22] | sensorimotor conversion | pubmed | doi |
+| 32 | Werring, et al. [109] | sensory conversion | pubmed | doi |
+| 33 | Yazici, et al. [110] | Astasia-Abasia | pubmed | doi |
 
 ### Not found (16 studies)
 
@@ -110,7 +111,6 @@ by author surname and title/disorder keyword overlap.
 | --- | --- | --- | --- |
 | Atmaca, et al. [83] | somatization disorder | sMRI (1.5 Tesla) | Out-of-scope disorder (not FND) |
 | Atmaca, et al. [84] | motor conversion | sMRI (1.5 Tesla) | In-scope miss (investigate search terms) |
-| Benbadis, et al. [85] | syncope of unknown origin | CT (7 patients), MRI (8 patients) | Out-of-scope imaging modality (EEG / MEG / CT) |
 | Blakemore, et al. [86] | motor conversion | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
 | Blakemore, et al. [87] | motor conversion | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
 | Bonilha, et al. [88] | idiopathic dystonia | sMRI (3.0 Tesla) | In-scope miss (investigate search terms) |
@@ -121,21 +121,21 @@ by author surname and title/disorder keyword overlap.
 | Hakala, et al. [98] | somatization disorder | sMRI (1.5 Tesla) | Out-of-scope disorder (not FND) |
 | Hoechstetter, et al. [99] | motor conversion | MEG | Out-of-scope imaging modality (EEG / MEG / CT) |
 | Hovorka, et al. [100] | PNES | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
-| Karatas, et al. [101] | PNES | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
-| Knyazeva, et al. [102] | PNES | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
+| Krüger, et al. [103] | dissociation DES | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
 | Rauch, et al. [106] | body dysmorphic disorder | MRI | Out-of-scope disorder (not FND) |
+| Roelofs, et al. [66] | motor conversion | EEG | Out-of-scope imaging modality (EEG / MEG / CT) |
+| aSpence, et al. [20] | motor conversion | PET | In-scope miss (investigate search terms) |
 
 ### Miss analysis
 
-**Out-of-scope imaging modality (EEG / MEG / CT)** (7 studies)
+**Out-of-scope imaging modality (EEG / MEG / CT)** (6 studies)
 
-- Benbadis, et al. [85]: syncope of unknown origin (CT (7 patients), MRI (8 patients))
 - Blakemore, et al. [86]: motor conversion (EEG)
 - Blakemore, et al. [87]: motor conversion (EEG)
 - Hoechstetter, et al. [99]: motor conversion (MEG)
 - Hovorka, et al. [100]: PNES (EEG)
-- Karatas, et al. [101]: PNES (EEG)
-- Knyazeva, et al. [102]: PNES (EEG)
+- Krüger, et al. [103]: dissociation DES (EEG)
+- Roelofs, et al. [66]: motor conversion (EEG)
 
 **Out-of-scope disorder (not FND)** (7 studies)
 
@@ -147,21 +147,22 @@ by author surname and title/disorder keyword overlap.
 - Hakala, et al. [98]: somatization disorder (sMRI (1.5 Tesla))
 - Rauch, et al. [106]: body dysmorphic disorder (MRI)
 
-**In-scope miss (investigate search terms)** (2 studies)
+**In-scope miss (investigate search terms)** (3 studies)
 
 - Atmaca, et al. [84]: motor conversion (sMRI (1.5 Tesla))
 - Bonilha, et al. [88]: idiopathic dystonia (sMRI (3.0 Tesla))
+- aSpence, et al. [20]: motor conversion (PET)
 
 ## Conclusion
 
-Our search strategy recovers **33/35 in-scope studies** from the OS Table 1
-(2 in-scope misses).
+Our search strategy recovers **33/36 in-scope studies** from the OS Table 1
+(3 in-scope misses).
 
 The 16 unrecovered studies break down as:
 
-- Out-of-scope imaging modality (EEG / MEG / CT): 7
+- Out-of-scope imaging modality (EEG / MEG / CT): 6
 - Out-of-scope disorder (not FND): 7
-- In-scope miss (investigate search terms): 2
+- In-scope miss (investigate search terms): 3
 
 The vast majority of misses are explainable by being outside the scope
 of our FND neuroimaging meta-analysis (wrong imaging modality or wrong
