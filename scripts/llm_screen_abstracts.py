@@ -19,6 +19,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import sys
 import time
 from contextlib import suppress
@@ -165,15 +166,21 @@ def completed_record_ids(path: Path) -> set[str]:
     return done
 
 
+def _strip_control_chars(text: str) -> str:
+    """Remove ASCII control characters (except newline/tab) that some models emit."""
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
+    text = _strip_control_chars(text)
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
             return json.loads(text[start : end + 1])
-        raise
+        except json.JSONDecodeError:
+            pass
+    return json.loads(text)
 
 
 def normalize_and_validate_decision(decision: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -249,7 +256,18 @@ def call_model(
     timeout: int,
     max_retries: int,
     use_response_format: bool,
+    thinking: bool | None = None,
 ) -> dict[str, Any]:
+    """Call the model for one record.
+
+    ``thinking`` controls ``chat_template_kwargs``:
+      - None  → omit the key entirely (server default)
+      - True  → ``{"thinking": true, "enable_thinking": true}``
+      - False → ``{"thinking": false, "enable_thinking": false}``
+
+    Both ``thinking`` and ``enable_thinking`` are sent together because
+    different model families use different key names.
+    """
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -263,6 +281,11 @@ def call_model(
             {"role": "user", "content": build_user_prompt(record)},
         ],
     }
+    if thinking is not None:
+        payload["chat_template_kwargs"] = {
+            "thinking": thinking,
+            "enable_thinking": thinking,
+        }
     if use_response_format:
         payload["response_format"] = {"type": "json_object"}
 
@@ -291,6 +314,7 @@ def call_model(
                 "source": {
                     "model": model,
                     "base_url": base_url,
+                    "thinking": thinking,
                 },
                 "input_record": record,
                 "llm_decision": parsed,
@@ -309,6 +333,7 @@ def call_model(
         "source": {
             "model": model,
             "base_url": base_url,
+            "thinking": thinking,
         },
         "input_record": record,
         "llm_decision": None,
@@ -329,7 +354,27 @@ def main() -> None:
         action="store_true",
         help="Do not send response_format=json_object; useful for local servers that reject it.",
     )
+    thinking_group = parser.add_mutually_exclusive_group()
+    thinking_group.add_argument(
+        "--thinking",
+        action="store_true",
+        default=None,
+        help="Pass chat_template_kwargs thinking=true/enable_thinking=true (force reasoning on).",
+    )
+    thinking_group.add_argument(
+        "--no-thinking",
+        action="store_true",
+        default=None,
+        help="Pass chat_template_kwargs thinking=false/enable_thinking=false (force reasoning off).",
+    )
     args = parser.parse_args()
+
+    if args.thinking:
+        thinking: bool | None = True
+    elif args.no_thinking:
+        thinking = False
+    else:
+        thinking = None
 
     api_key = os.getenv("OPENAI_API_KEY", "")
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -359,6 +404,7 @@ def main() -> None:
                 args.timeout,
                 args.max_retries,
                 not args.no_response_format,
+                thinking,
             )
             for record in todo
         ]
