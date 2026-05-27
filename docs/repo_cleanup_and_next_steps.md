@@ -1,6 +1,6 @@
 # Repo State and Next Steps
 
-Last updated: 2026-05-15
+Last updated: 2026-05-21
 
 ## Current status: LLM screening validated
 
@@ -59,6 +59,38 @@ a proof of concept. See `docs/validation_strategy_notes.md` for full results.
 | Qwen 3.5 122B (no thinking) | 9/9 (100%) | **25/25 (100%)** | Selected model |
 | Gemma4 (no thinking) | 6/9 (67%) | — | 3 false exclusions |
 
+## Methodological decisions (2026-05-21)
+
+- **PECO refined:** P=Adults ≥18, E=FND diagnosis (all historical terms),
+  C=HC (primary) / clinical controls (subgroup), O=brain structure/function
+  differences in MNI/Talairach coordinates. Per Morgan et al. (2018) PECO
+  and COSMOS-E guidance.
+- **ALE power thresholds:** ≥20 experiments target, 17 hard floor
+  (Eickhoff et al. 2016). Below threshold → narrative synthesis only.
+- **DTI excluded from primary ALE:** white-matter coordinates not comparable
+  to grey matter VBM/fMRI coordinates. DTI → narrative synthesis.
+- **Multimodal pooling:** Separate ALEs for functional and structural GM,
+  then conjunction analysis via NiMARE. Optional MACM/functional decoding.
+- **Screening workflow:** Meta-analysis #1 = 2 humans + LLM (conservative
+  for Q1 journals). Meta-analysis #2 = human + LLM + human adjudicator
+  (justified by inter-rater data from #1).
+
+## Scoping count (PubMed-only, 2026-05-21)
+
+Raw PubMed counts (include reviews, case reports, non-coordinate studies).
+Actual ALE-eligible ≈ 30–50% of raw after filtering.
+
+| Category | PubMed raw | Est. ALE-eligible | vs. 20-exp threshold |
+| --- | --- | --- | --- |
+| Functional (fMRI/PET/SPECT) | ~173 | ~40–60 | Well above |
+| Structural GM (VBM/CT) | ~43 | ~15–25 | Near/at threshold |
+| DTI / white matter | ~35 | ~5–10 | Below → narrative only |
+| Motor FND subgroup | ~304 | ~25–40 | Likely above |
+| PNES subgroup | ~257 | ~15–25 | Borderline |
+
+Calibration: Boeckle 2016 had 12 motor fMRI studies (to Aug 2015);
+Mavroudis 2024 had 8 VBM studies with narrow terms.
+
 ## What to do next
 
 ### Immediate (search finalization)
@@ -74,8 +106,8 @@ a proof of concept. See `docs/validation_strategy_notes.md` for full results.
 
 ### Short-term (screening)
 
-4. **Screen the production corpus.** Run LLM + human dual screening on the
-   full production search results.
+4. **Screen the production corpus.** Meta-analysis #1 uses two independent
+   human screeners + LLM as verification layer.
 5. **Investigate the 3 in-scope misses** from the OS validation
    (Atmaca [84], Bonilha [88], Spence [20]) via citation chasing.
 
