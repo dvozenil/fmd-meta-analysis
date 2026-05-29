@@ -2,6 +2,7 @@
 fnd_search_*/
 data/llm_screening_results_*.jsonl
 data/*_OLD.jsonl
+docs/references/*.pdf
 
 # Python
 __pycache__/

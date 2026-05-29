@@ -42,7 +42,7 @@ data/
   evaluation_summary_*.csv             # Model comparison tables
 ```
 
-Source PDFs live in [docs/references/](docs/references/README.md).
+Source PDFs are kept locally in [docs/references/](docs/references/README.md) and are not versioned.
 
 ## Search script
 

@@ -1,6 +1,6 @@
 # References
 
-Source PDFs moved here during repo cleanup:
+Source PDFs are kept locally here, but intentionally left out of version control:
 
 - `s12888-016-0890-x.pdf` - Boeckle et al. (2016), original motor conversion disorder meta-analysis.
 - `A_Voxel-Wise_Meta-Analysis_of_the_Volumetric_Chang.pdf` - Mavroudis et al. (2024), structural meta-analysis reference.
