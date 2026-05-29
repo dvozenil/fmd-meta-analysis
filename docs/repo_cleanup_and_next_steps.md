@@ -1,6 +1,6 @@
 # Repo State and Next Steps
 
-Last updated: 2026-05-21
+Last updated: 2026-05-28
 
 ## Current status: LLM screening validated
 
@@ -15,9 +15,11 @@ a proof of concept. See `docs/validation_strategy_notes.md` for full results.
 
 ## Scripts and data
 
-- `fnd_meta_search.py`: search runner (update, full, os_validation modes).
+- `fnd_meta_search.py`: search runner (update, full, os_validation,
+  ludwig_validation modes).
 - `scripts/llm_screen_abstracts.py`: OpenAI-compatible screening (with
-  `--thinking` / `--no-thinking` flags for hybrid models).
+  `--thinking` / `--no-thinking` flags for hybrid models, `--prompt` for
+  external prompt files).
 - `scripts/validate_os_recall.py`: cross-references search results against
   Boeckle et al. (2016) Table 1 using DOI-first matching.
 - `scripts/resolve_os_references.py`: fetches the OS reference list from
@@ -43,6 +45,14 @@ a proof of concept. See `docs/validation_strategy_notes.md` for full results.
 - `data/validation_screening_set_50.jsonl`: pilot subset (15 strict, 5 broad, 30 other).
 - `data/pilot/`: model pilot outputs and full validation run.
 - `data/human_screening_sample_50.csv`: generated sample for blind screening.
+- `scripts/resolve_ludwig_references.py`: resolves Ludwig et al. (2018)
+  included studies to DOIs via CrossRef.
+- `scripts/validate_ludwig_recall.py`: cross-references search results
+  against Ludwig et al. (2018) included studies using DOI-first matching.
+- `data/ludwig_included_studies.csv`: 34 case-control studies from Ludwig
+  et al. (2018) Table 1 / references 27–61.
+- `prompts/neuroimaging_v1.txt`: externalized neuroimaging screening prompt.
+- `prompts/trauma_v1.txt`: Ludwig-specific trauma/stressor screening prompt.
 
 ## Gold label categories
 
@@ -111,10 +121,19 @@ Mavroudis 2024 had 8 VBM studies with narrow terms.
 5. **Investigate the 3 in-scope misses** from the OS validation
    (Atmaca [84], Bonilha [88], Spence [20]) via citation chasing.
 
-### Cross-validation opportunity
+### Cross-validation (in progress)
 
-6. **Ludwig et al. (2018) cross-validation.** The team's new trauma-in-FND
-   meta-analysis (Lancet Psychiatry, doi:10.1016/S2215-0366(18)30051-8)
-   provides an independent validation set. Extract included studies, run
-   search + screener, check sensitivity on a different reference standard.
-   This tests generalization beyond the Boeckle benchmark.
+6. **Ludwig et al. (2018) cross-validation — infrastructure built.**
+   The trauma-in-FND meta-analysis (Lancet Psychiatry,
+   doi:10.1016/S2215-0366(18)30051-8) serves as an independent held-out
+   benchmark for LLM screening generalization. Infrastructure is complete:
+   search mode, gold-standard CSV, DOI resolver, validation script, and
+   screening prompt. Remaining: run the pipeline end-to-end.
+
+### Methods paper (if pursued)
+
+7. **Model-class comparison study.** Run the same FND screening task across
+   a model ladder (small local → large open → frontier mid → frontier full),
+   validate on both Boeckle and Ludwig benchmarks, evaluate per
+   LLM4SCREENLIT recommendations. Target: Research Synthesis Methods or
+   Systematic Reviews.

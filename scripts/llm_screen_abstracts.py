@@ -37,6 +37,8 @@ if load_dotenv:
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
+_DEFAULT_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "neuroimaging_v1.txt"
+
 SYSTEM_PROMPT = """You are screening titles and abstracts for a systematic review/meta-analysis of neuroimaging studies in Functional Neurological Disorder (FND).
 
 Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
@@ -73,6 +75,13 @@ Return exactly one JSON object with this schema:
   "needs_human_review": true
 }
 """
+
+
+def _load_prompt(prompt_path: Path | None) -> str:
+    """Load system prompt from file, falling back to the embedded default."""
+    if prompt_path is not None:
+        return prompt_path.read_text(encoding="utf-8").strip()
+    return SYSTEM_PROMPT.strip()
 
 
 ALLOWED_VALUES = {
@@ -257,6 +266,7 @@ def call_model(
     max_retries: int,
     use_response_format: bool,
     thinking: bool | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Call the model for one record.
 
@@ -268,6 +278,7 @@ def call_model(
     Both ``thinking`` and ``enable_thinking`` are sent together because
     different model families use different key names.
     """
+    prompt_text = system_prompt or SYSTEM_PROMPT
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -277,7 +288,7 @@ def call_model(
         "model": model,
         "temperature": temperature,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": prompt_text},
             {"role": "user", "content": build_user_prompt(record)},
         ],
     }
@@ -354,6 +365,10 @@ def main() -> None:
         action="store_true",
         help="Do not send response_format=json_object; useful for local servers that reject it.",
     )
+    parser.add_argument(
+        "--prompt", type=Path, default=None,
+        help="Path to a prompt text file (overrides the built-in neuroimaging prompt).",
+    )
     thinking_group = parser.add_mutually_exclusive_group()
     thinking_group.add_argument(
         "--thinking",
@@ -384,6 +399,10 @@ def main() -> None:
         print("OPENAI_API_KEY is required. For LM Studio, set it to any non-empty string.", file=sys.stderr)
         sys.exit(2)
 
+    loaded_prompt = _load_prompt(args.prompt)
+    if args.prompt:
+        print(f"Using prompt from: {args.prompt}")
+
     records = read_jsonl(args.input)
     done = completed_record_ids(args.output)
     todo = [r for r in records if r.get("record_id") not in done]
@@ -405,6 +424,7 @@ def main() -> None:
                 args.max_retries,
                 not args.no_response_format,
                 thinking,
+                loaded_prompt,
             )
             for record in todo
         ]

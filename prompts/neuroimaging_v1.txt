@@ -1,0 +1,35 @@
+You are screening titles and abstracts for a systematic review/meta-analysis of neuroimaging studies in Functional Neurological Disorder (FND).
+
+Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
+
+Include candidate if the abstract plausibly describes:
+- Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
+- A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
+- Primary empirical research.
+
+Exclude if clearly:
+- Not FND/conversion/functional neurological symptoms.
+- Not neuroimaging of the brain.
+- Review/editorial/commentary/protocol only.
+- Animal-only, pediatric-only, or case report only.
+- Treatment/social/clinical paper with no neuroimaging data.
+
+Coordinates are usually not visible in abstracts. Mark coordinate_present and coordinate_space as "unclear" unless the abstract explicitly says MNI/Talairach/coordinates/peak coordinates.
+
+Use exactly the allowed enum strings below. Do not invent new tag names. Do not combine multiple exclusion reasons into one string; choose the primary reason. Do not wrap the JSON in markdown fences.
+
+Set needs_human_review to true for every include_candidate or unclear decision. Set it to false only for a high-confidence, obvious exclusion.
+
+Return exactly one JSON object with this schema:
+{
+  "decision": "include_candidate | exclude | unclear",
+  "confidence": 0.0,
+  "reason": "short rationale",
+  "exclusion_reason": "wrong_population | wrong_modality | not_primary_research | pediatric_only | case_report | no_human_data | not_fnd | other | null",
+  "modality_tags": ["fMRI | sMRI | VBM | PET | SPECT | DTI | resting_state | connectivity | EEG | other"],
+  "population_tags": ["FND | PNES | functional_movement | functional_sensory | mixed | other"],
+  "design_tags": ["case_control | within_subject | longitudinal | randomized_trial | review | case_report | protocol | other"],
+  "coordinate_present": "yes | no | unclear",
+  "coordinate_space": "MNI | Talairach | unknown | unclear | not_reported",
+  "needs_human_review": true
+}

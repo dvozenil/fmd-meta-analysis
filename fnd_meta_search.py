@@ -68,7 +68,8 @@ def _parse_args() -> argparse.Namespace:
         description="FND Neuroimaging Meta-Analysis — PRISMA-compliant database search"
     )
     parser.add_argument(
-        "--mode", choices=["update", "full", "os_validation", "os_table_recall"],
+        "--mode", choices=["update", "full", "os_validation", "os_table_recall",
+                           "ludwig_validation"],
         default=None,
         help="Search mode (overrides FND_SEARCH_MODE env var)",
     )
@@ -76,9 +77,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--full", action="store_const", const="full", dest="mode")
     parser.add_argument("--os_validation", action="store_const", const="os_validation", dest="mode")
     parser.add_argument("--os_table_recall", action="store_const", const="os_table_recall", dest="mode")
+    parser.add_argument("--ludwig_validation", action="store_const", const="ludwig_validation", dest="mode")
+    parser.add_argument(
+        "--auto", action="store_true",
+        help="Run all steps without interactive confirmation prompts",
+    )
     return parser.parse_args()
 
 _cli_args = _parse_args()
+AUTO_MODE = _cli_args.auto
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -90,8 +97,9 @@ _cli_args = _parse_args()
 #   "os_validation"   — inception to August 2015 using original-study terms
 #   "os_table_recall" — inception to August 2015, broadened terms, no language filter
 SEARCH_MODE = _cli_args.mode or os.getenv("FND_SEARCH_MODE", "update")
-VALID_SEARCH_MODES = {"update", "full", "os_validation", "os_table_recall"}
-_VALIDATION_MODES = {"os_validation", "os_table_recall"}
+VALID_SEARCH_MODES = {"update", "full", "os_validation", "os_table_recall",
+                      "ludwig_validation"}
+_VALIDATION_MODES = {"os_validation", "os_table_recall", "ludwig_validation"}
 if SEARCH_MODE not in VALID_SEARCH_MODES:
     raise ValueError(
         f"Unknown FND_SEARCH_MODE={SEARCH_MODE!r}; expected one of "
@@ -99,9 +107,13 @@ if SEARCH_MODE not in VALID_SEARCH_MODES:
     )
 
 SEARCH_START_YEAR: int | None = 2015 if SEARCH_MODE == "update" else None
+_VALIDATION_END_DATES = {
+    "os_validation": "2015/08/31",
+    "os_table_recall": "2015/08/31",
+    "ludwig_validation": "2016/11/04",
+}
 DEFAULT_SEARCH_END_DATE = (
-    "2015/08/31" if SEARCH_MODE in _VALIDATION_MODES
-    else datetime.now().strftime("%Y/%m/%d")
+    _VALIDATION_END_DATES.get(SEARCH_MODE, datetime.now().strftime("%Y/%m/%d"))
 )
 SEARCH_END_DATE = os.getenv("FND_SEARCH_END_DATE", DEFAULT_SEARCH_END_DATE)
 
@@ -325,13 +337,56 @@ OS_RECALL_IMAGING_TERMS = [
 ]
 
 
+# Ludwig et al. (2018) validation terms. The published search was a 3-block
+# AND: (FND terms) AND (stressor terms) AND (study-design terms).
+# Searched PubMed and Science Direct, 1965 to Nov 4 2016.
+LUDWIG_FND_TERMS = [
+    "psychogenic",
+    "conversion disorder",
+    "non-epileptic",
+]
+
+LUDWIG_STRESSOR_TERMS = [
+    "abuse",
+    "life event",
+]
+
+LUDWIG_DESIGN_TERMS = [
+    "control",
+    "controlled",
+    "case-control",
+]
+
+
+@dataclass
+class SearchTermConfig:
+    """Container for search term blocks. block_c is optional (3-block queries)."""
+    block_a: list[str]
+    block_b: list[str]
+    block_c: list[str] | None = None
+
+
 def _active_terms() -> tuple[list[str], list[str]]:
-    """Return FND and imaging term lists for the current search mode."""
+    """Return FND and imaging/topic term lists for the current search mode.
+
+    For backward compatibility, returns a 2-tuple. Ludwig mode assembles a
+    3-block query internally via _active_term_config().
+    """
+    config = _active_term_config()
+    return config.block_a, config.block_b
+
+
+def _active_term_config() -> SearchTermConfig:
+    """Return full search term configuration for the current search mode."""
     if SEARCH_MODE == "os_validation":
-        return OS_FND_TERMS, OS_IMAGING_TERMS
+        return SearchTermConfig(OS_FND_TERMS, OS_IMAGING_TERMS)
     if SEARCH_MODE == "os_table_recall":
-        return OS_RECALL_FND_TERMS, OS_RECALL_IMAGING_TERMS
-    return FND_TERMS, IMAGING_TERMS
+        return SearchTermConfig(OS_RECALL_FND_TERMS, OS_RECALL_IMAGING_TERMS)
+    if SEARCH_MODE == "ludwig_validation":
+        return SearchTermConfig(
+            LUDWIG_FND_TERMS, LUDWIG_STRESSOR_TERMS, LUDWIG_DESIGN_TERMS,
+        )
+    return SearchTermConfig(FND_TERMS, IMAGING_TERMS)
 
 
 def _date_filter_pubmed() -> str:
@@ -376,7 +431,8 @@ def _build_pubmed_text_block(terms: list[str]) -> str:
 
 def build_pubmed_query() -> str:
     """PubMed syntax: uses [MeSH Terms], [tiab], field tags."""
-    fnd_terms, imaging_terms = _active_terms()
+    config = _active_term_config()
+    fnd_terms, imaging_terms = config.block_a, config.block_b
     if SEARCH_MODE in _VALIDATION_MODES:
         fnd_block = _build_pubmed_text_block(fnd_terms)
         imaging_block = _build_pubmed_text_block(imaging_terms)
@@ -384,7 +440,11 @@ def build_pubmed_query() -> str:
             imaging_block += (
                 ' OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])'
             )
-        return f"({fnd_block}) AND ({imaging_block}) {_date_filter_pubmed()}"
+        query = f"({fnd_block}) AND ({imaging_block})"
+        if config.block_c:
+            design_block = _build_pubmed_text_block(config.block_c)
+            query += f" AND ({design_block})"
+        return f"{query} {_date_filter_pubmed()}"
 
     fnd_block = (
         '("Conversion Disorder"[MeSH] OR "Dissociative Disorders"[MeSH] '
@@ -410,45 +470,54 @@ def build_pubmed_query() -> str:
 
 def build_wos_query() -> str:
     """Web of Science syntax: TS= searches Topic (title + abstract + keywords)."""
-    fnd_terms, imaging_terms = _active_terms()
-    fnd = _build_wos_phrase_or_block(fnd_terms)
-    imag = _build_wos_phrase_or_block(imaging_terms)
+    config = _active_term_config()
+    fnd = _build_wos_phrase_or_block(config.block_a)
+    imag = _build_wos_phrase_or_block(config.block_b)
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     year_range = _date_filter_year_range().replace(" TO ", "-")
     date_part = f" AND PY={year_range}"
-    lang_part = "" if SEARCH_MODE == "os_table_recall" else " AND LA=(English)"
-    return f'TS=({fnd}) AND TS=({imag}){lang_part}{date_part}'
+    no_lang_modes = {"os_table_recall", "ludwig_validation"}
+    lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LA=(English)"
+    query = f'TS=({fnd}) AND TS=({imag})'
+    if config.block_c:
+        design = _build_wos_phrase_or_block(config.block_c)
+        query += f' AND TS=({design})'
+    return f'{query}{lang_part}{date_part}'
 
 
 def build_europepmc_query() -> str:
     """Europe PMC syntax: similar to Lucene. Uses TITLE_ABS, PUB_YEAR."""
-    fnd_terms, imaging_terms = _active_terms()
-    fnd = _build_europepmc_phrase_or_block(fnd_terms)
-    imag = _build_europepmc_phrase_or_block(imaging_terms)
+    config = _active_term_config()
+    fnd = _build_europepmc_phrase_or_block(config.block_a)
+    imag = _build_europepmc_phrase_or_block(config.block_b)
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = f" AND (PUB_YEAR:[{_date_filter_year_range()}])"
-    lang_part = '' if SEARCH_MODE == "os_table_recall" else ' AND (LANG:"eng")'
-    return (
-        f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag}))'
-        f'{lang_part}{date_part}'
-    )
+    no_lang_modes = {"os_table_recall", "ludwig_validation"}
+    lang_part = '' if SEARCH_MODE in no_lang_modes else ' AND (LANG:"eng")'
+    query = f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag}))'
+    if config.block_c:
+        design = _build_europepmc_phrase_or_block(config.block_c)
+        query += f' AND (TITLE_ABS:({design}))'
+    return f'{query}{lang_part}{date_part}'
 
 
 def build_scopus_query() -> str:
     """Scopus syntax: TITLE-ABS-KEY field tag, AND/OR Boolean."""
-    fnd_terms, imaging_terms = _active_terms()
-    fnd = _build_scopus_phrase_or_block(fnd_terms)
-    imag = _build_scopus_phrase_or_block(imaging_terms)
+    config = _active_term_config()
+    fnd = _build_scopus_phrase_or_block(config.block_a)
+    imag = _build_scopus_phrase_or_block(config.block_b)
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = _scopus_date_filter()
-    lang_part = "" if SEARCH_MODE == "os_table_recall" else " AND LANGUAGE(english)"
-    return (
-        f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag})){date_part}'
-        f'{lang_part}'
-    )
+    no_lang_modes = {"os_table_recall", "ludwig_validation"}
+    lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LANGUAGE(english)"
+    query = f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag}))'
+    if config.block_c:
+        design = _build_scopus_phrase_or_block(config.block_c)
+        query += f' AND (TITLE-ABS-KEY({design}))'
+    return f'{query}{date_part}{lang_part}'
 
 
 # ---------------------------------------------------------------------------
@@ -993,6 +1062,22 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
                 "criteria should all be applied during screening."
             ),
         }
+    elif SEARCH_MODE == "ludwig_validation":
+        search_scope_note = (
+            "Ludwig validation mode replicates the search strategy from "
+            "Ludwig et al. (2018) Lancet Psychiatry (trauma/stressors in "
+            "FND). Uses a 3-block AND query: FND terms x stressor terms x "
+            "study-design terms. Date range: inception to 2016/11/04. "
+            "Language filters are NOT applied at search stage."
+        )
+        filters_applied = {
+            "language": "None at search stage — apply during screening",
+            "date": f"inception to {SEARCH_END_DATE}",
+            "query_structure": "3-block AND (FND x stressor x study-design)",
+            "screening_filters": (
+                "Language (English) applied during screening."
+            ),
+        }
     else:
         search_scope_note = (
             "Case reports, reviews, and non-primary research are NOT excluded "
@@ -1008,6 +1093,7 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
     _search_profiles = {
         "os_validation": "Boeckle et al. 2016 validation approximation",
         "os_table_recall": "Boeckle et al. 2016 Table 1 recall (broadened terms)",
+        "ludwig_validation": "Ludwig et al. 2018 trauma-in-FND validation",
     }
     prisma_meta = {
         "run_id": RUN_ID,
@@ -1035,6 +1121,20 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
 
 
 # ---------------------------------------------------------------------------
+# INTERACTIVE HELPERS
+# ---------------------------------------------------------------------------
+
+def _confirm(prompt: str) -> bool:
+    """Ask user for yes/no confirmation. Returns True on 'y'/'yes'."""
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("y", "yes")
+
+
+# ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
@@ -1044,6 +1144,8 @@ def main() -> None:
         log.info("Using Boeckle et al. (2016) validation terms")
     elif SEARCH_MODE == "os_table_recall":
         log.info("Using broadened terms for Table 1 recall (no language filter at search stage)")
+    elif SEARCH_MODE == "ludwig_validation":
+        log.info("Using Ludwig et al. (2018) trauma-in-FND validation terms (3-block query)")
     log.info(f"Date range: {'inception' if SEARCH_START_YEAR is None else SEARCH_START_YEAR} "
              f"to {SEARCH_END_DATE}")
 
@@ -1084,6 +1186,29 @@ def main() -> None:
             per_db[name] = 0
             all_records_by_db[name] = []
 
+    # -- Summary of search results ------------------------------------------
+    log.info("=" * 60)
+    log.info("Search results summary:")
+    total_raw = sum(per_db.values())
+    for db, n in per_db.items():
+        log.info(f"  {db}: {n} records")
+    log.info(f"  TOTAL: {total_raw} raw records")
+    log.info("=" * 60)
+
+    # -- Scopus abstract enrichment (gated) ---------------------------------
+    scopus_count = per_db.get("scopus", 0)
+    scopus_abstracts_fetched = False
+    if scopus_count > 0 and not AUTO_MODE:
+        log.info(
+            f"Scopus returned {scopus_count} records. Abstract enrichment "
+            f"requires one API call per record and may take a while."
+        )
+        if _confirm("Fetch Scopus abstracts?"):
+            scopus_abstracts_fetched = True
+        else:
+            log.info("Skipping Scopus abstract enrichment (re-run with --auto to skip this prompt)")
+
+    # -- Deduplication ------------------------------------------------------
     log.info(f"Total raw records across all DBs: {len(all_records)}")
     deduped, dedup_stats = deduplicate(all_records)
     log.info(f"After dedup: {len(deduped)} unique records "
@@ -1092,12 +1217,13 @@ def main() -> None:
 
     # Fetch abstracts only for deduplicated Scopus-sourced records missing them.
     # PubMed/Europe PMC already include abstracts; duplicates have been removed.
-    scopus_need_abstract = [r for r in deduped
-                            if r.source_db == "scopus" and not r.abstract]
-    if scopus_need_abstract:
-        log.info(f"Fetching abstracts for {len(scopus_need_abstract)} Scopus-only "
-                 f"records (post-dedup)")
-        ScopusClient()._enrich_abstracts(scopus_need_abstract)
+    if AUTO_MODE or scopus_abstracts_fetched:
+        scopus_need_abstract = [r for r in deduped
+                                if r.source_db == "scopus" and not r.abstract]
+        if scopus_need_abstract:
+            log.info(f"Fetching abstracts for {len(scopus_need_abstract)} Scopus-only "
+                     f"records (post-dedup)")
+            ScopusClient()._enrich_abstracts(scopus_need_abstract)
 
     export_results(deduped, all_records_by_db, queries, per_db, dedup_stats)
 
