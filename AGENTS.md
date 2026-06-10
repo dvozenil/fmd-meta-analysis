@@ -42,6 +42,11 @@ PI: Petr Sojka. Student lead: David Voženílek.
 
 - Python 3.11+. Dependencies in `requirements.txt`.
 - API keys go in `.env` (see `.env.example`). Never commit `.env`.
+- **Primary LLM endpoint:** e-INFRA MetaCentrum at
+  `https://llm.ai.e-infra.cz/v1` (token-authenticated, OpenAI-compatible).
+  Model name on this endpoint: `qwen3.5-122b`. Use `--no-response-format`
+  and `--no-thinking` for screening runs (the endpoint doesn't support
+  `response_format=json_object` and thinking-off gives validated results).
 - Generated search runs land in timestamped `fnd_search_*/` directories
   (gitignored). Committed data lives in `data/`.
 - Gold-label categories: `include_candidate` (strict, must recover) and
@@ -54,9 +59,10 @@ PI: Petr Sojka. Student lead: David Voženílek.
 
 - **Boeckle validation complete:** 25/25 sensitivity, 50-record human
   comparison with 0 LLM misses. Qwen 3.5 122B is the validated model.
-- **Ludwig cross-validation infrastructure built:** search mode, gold-standard
-  CSV, DOI resolver, validation script, screening prompt all ready.
-  **Not yet run end-to-end.**
+- **Ludwig cross-validation complete:** 14/14 = 100% sensitivity on held-out
+  benchmark. Search run (`fnd_search_20260528_111459/`): 197 deduplicated
+  records, 14/34 Ludwig studies matched (20 unfindable via title/abstract —
+  terms only in full text). DOI resolver bugs fixed (4 collision errors).
 - **Methods paper planned:** dual-benchmark model-ladder comparison
   (5 model classes x 3 prompts x 2 benchmarks). Design in
   `docs/methods_paper_plan.md`.
@@ -64,10 +70,25 @@ PI: Petr Sojka. Student lead: David Voženílek.
 ## What's next
 
 1. **Run the Ludwig cross-validation end-to-end.** Steps:
-   - `python fnd_meta_search.py --ludwig_validation --auto`
-   - `python scripts/validate_ludwig_recall.py` (builds validation JSONL)
-   - `python scripts/llm_screen_abstracts.py --prompt prompts/trauma_v1.txt --input <ludwig_validation_set.jsonl>`
-   - Compare screening decisions against gold labels.
+   ```bash
+   # Set up credentials
+   export OPENAI_BASE_URL="https://llm.ai.e-infra.cz/v1"
+   export OPENAI_API_KEY="$E_INFRA_API_TOKEN"
+
+   # 1. Build validation JSONL (already done if fnd_search_20260528_111459 exists)
+   python3 scripts/validate_ludwig_recall.py --search-dir fnd_search_20260528_111459
+
+   # 2. Screen with Qwen 3.5 122B using trauma prompt
+   OPENAI_MODEL=qwen3.5-122b python3 scripts/llm_screen_abstracts.py \
+     --input data/ludwig_validation_set.jsonl \
+     --output data/ludwig_screening_results.jsonl \
+     --prompt prompts/trauma_v1.txt \
+     --workers 4 --no-response-format --no-thinking
+
+   # 3. Check sensitivity against gold labels
+   python3 scripts/check_pilot_results.py data/ludwig_screening_results.jsonl \
+     --gold data/ludwig_validation_set.jsonl
+   ```
 2. **Finalize and freeze search terms** for the production meta-analysis.
 3. **Run the production search** (`--full`, no date cutoff) once terms are frozen.
 4. **Methods paper model runs** (if pursued): add WMCC metrics, run model

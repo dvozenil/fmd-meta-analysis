@@ -2,16 +2,23 @@
 
 Last updated: 2026-06-10
 
-## Current status: LLM screening validated
+## Current status: LLM screening validated (dual benchmark)
 
-The screening pipeline (Qwen 3.5 122B + current prompt) is validated as
-a proof of concept. See `docs/validation_strategy_notes.md` for full results.
+The screening pipeline (Qwen 3.5 122B + domain-specific prompts) is validated
+on two independent benchmarks.
 
-**Key numbers:**
+**Boeckle benchmark (neuroimaging):**
 - 25/25 strict gold-label sensitivity (100%)
 - 50-record human-vs-LLM comparison: 0 LLM misses, 72% exact agreement
 - LLM acts as a liberal screener (over-includes case reports and adjacent
   populations) — acceptable for dual-screening
+
+**Ludwig benchmark (trauma/stressors in FND):**
+- 14/14 findable gold-label sensitivity (100%)
+- 197-record pool, 65 included by LLM (33%), 132 excluded
+- Search recovered 14/34 Ludwig studies (the other 20 require full-text
+  search or reference-chasing — unfindable via title/abstract)
+- Independently validates generalization across FND sub-domains
 
 ## Scripts and data
 
@@ -121,14 +128,20 @@ Mavroudis 2024 had 8 VBM studies with narrow terms.
 5. **Investigate the 3 in-scope misses** from the OS validation
    (Atmaca [84], Bonilha [88], Spence [20]) via citation chasing.
 
-### Cross-validation (in progress)
+### Cross-validation (complete)
 
-6. **Ludwig et al. (2018) cross-validation — infrastructure built.**
+6. **Ludwig et al. (2018) cross-validation — complete.**
    The trauma-in-FND meta-analysis (Lancet Psychiatry,
    doi:10.1016/S2215-0366(18)30051-8) serves as an independent held-out
-   benchmark for LLM screening generalization. Infrastructure is complete:
-   search mode, gold-standard CSV, DOI resolver, validation script, and
-   screening prompt. Remaining: run the pipeline end-to-end.
+   benchmark for LLM screening generalization.
+   - Search: 197 deduplicated records, 14/34 Ludwig studies matched
+     (20 unfindable via title/abstract — terms only in full text)
+   - LLM screening: **14/14 = 100% sensitivity** (Qwen 3.5 122B,
+     `prompts/trauma_v1.txt`, `--no-thinking`)
+   - 65/197 included by LLM (33% inclusion rate — higher than Boeckle
+     because Ludwig search terms are narrower/more topical)
+   - DOI resolver had 4 collision bugs (now fixed); see
+     `data/ludwig_included_studies_resolved.csv`
 
 ### Methods paper (if pursued)
 
