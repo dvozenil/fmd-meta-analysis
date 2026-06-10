@@ -25,21 +25,35 @@ Boeckle et al. (2016) conducted an ALE meta-analysis of **functional** neuroimag
 ## Repository contents
 
 ```
-fnd_meta_search.py      # PRISMA-compliant API search script
-requirements.txt        # Python dependencies
+fnd_meta_search.py          # PRISMA-compliant API search script (PubMed, Europe PMC, WoS, Scopus)
+requirements.txt            # Python dependencies
+prompts/
+  neuroimaging_v1.txt       # Production neuroimaging screening prompt
+  trauma_v1.txt             # Ludwig cross-validation screening prompt
 scripts/
-  make_screening_test_set.py   # Build small screening test sets
-  llm_screen_abstracts.py      # LLM title/abstract screening
-  evaluate_llm_screening.py    # Score LLM output vs human labels
-  validate_os_recall.py        # Cross-reference results against OS Table 1
+  llm_screen_abstracts.py          # LLM title/abstract screening (OpenAI-compatible)
+  validate_os_recall.py            # Cross-reference results vs Boeckle Table 1
+  resolve_os_references.py         # Fetch OS reference DOIs from CrossRef
+  resolve_ludwig_references.py     # Fetch Ludwig (2018) reference DOIs from CrossRef
+  validate_ludwig_recall.py        # Cross-reference results vs Ludwig (2018)
+  check_pilot_results.py           # Quick accuracy check for pilot runs
+  analyze_full_validation.py       # Full validation deep-dive analysis
+  prepare_human_screening_sample.py # Generate stratified human screening sample
+  compare_human_llm.py             # Human vs LLM decision comparison
 docs/
-  llm_screening_protocol.md    # Screening execution protocol
-  os_validation_report.md      # OS recall validation report
+  repo_cleanup_and_next_steps.md   # Current status and roadmap
+  methods_paper_plan.md            # Model-comparison methods paper design
+  os_validation_report.md          # OS recall validation report
+  validation_strategy_notes.md     # Validation conclusions
+  references/                      # Literature reviews and source PDFs
 data/
-  table_of_OS_studies.csv              # OS Table 1 (49 studies)
-  validation_screening_set.jsonl       # 709 records with 33 OS matches marked
-  test_abstracts_20*.jsonl             # Pilot screening fixtures
-  evaluation_summary_*.csv             # Model comparison tables
+  table_of_OS_studies.csv                # OS Table 1 (49 studies)
+  table_of_OS_studies_resolved.csv       # OS Table 1 with DOIs
+  validation_screening_set.jsonl         # 709 records, 25 gold-label includes
+  ludwig_included_studies.csv            # Ludwig (2018) 34 case-control studies
+  ludwig_included_studies_resolved.csv   # Ludwig studies with DOIs
+  ludwig_2018_references_crossref.json   # CrossRef API cache
+  pilot/                                 # Model pilot outputs
 ```
 
 Source PDFs are kept locally in [docs/references/](docs/references/README.md) and are not versioned.
@@ -65,13 +79,20 @@ python fnd_meta_search.py --os_validation
 # Table recall: broadened terms for OS Table 1 recovery (reference only)
 python fnd_meta_search.py --os_table_recall
 
-# Run full search with a custom end date (e.g. OS cutoff for validation)
-FND_SEARCH_END_DATE=2015/08/31 python fnd_meta_search.py --full
+# Ludwig et al. (2018) cross-validation: 3-block query to Nov 2016
+python fnd_meta_search.py --ludwig_validation
+
+# Non-interactive mode (skip confirmation prompts)
+python fnd_meta_search.py --full --auto
 ```
 
 The `os_table_recall` mode exists as a reference for how we attempted to
 replicate the OS search and why exact replication is not viable. See
 [docs/os_validation_report.md](docs/os_validation_report.md) for details.
+
+The `ludwig_validation` mode implements the Ludwig et al. (2018) search
+strategy (FND x stressor x study-design, inception to Nov 2016) for
+independent cross-validation of the LLM screening pipeline.
 
 ### Setup
 
