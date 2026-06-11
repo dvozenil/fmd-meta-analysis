@@ -14,9 +14,9 @@ on two independent benchmarks.
   populations) — acceptable for dual-screening
 
 **Ludwig benchmark (trauma/stressors in FND):**
-- 14/14 findable gold-label sensitivity (100%)
+- 15/15 findable gold-label sensitivity (100%)
 - 197-record pool, 65 included by LLM (33%), 132 excluded
-- Search recovered 14/34 Ludwig studies (the other 20 require full-text
+- Search recovered 15/34 Ludwig studies (the other 19 require full-text
   search or reference-chasing — unfindable via title/abstract)
 - Independently validates generalization across FND sub-domains
 
@@ -134,14 +134,14 @@ Mavroudis 2024 had 8 VBM studies with narrow terms.
    The trauma-in-FND meta-analysis (Lancet Psychiatry,
    doi:10.1016/S2215-0366(18)30051-8) serves as an independent held-out
    benchmark for LLM screening generalization.
-   - Search: 197 deduplicated records, 14/34 Ludwig studies matched
-     (20 unfindable via title/abstract — terms only in full text)
-   - LLM screening: **14/14 = 100% sensitivity** (Qwen 3.5 122B,
+   - Search: 197 deduplicated records, 15/34 Ludwig studies matched
+     (19 unfindable via title/abstract — terms only in full text)
+   - LLM screening: **15/15 = 100% sensitivity** (Qwen 3.5 122B,
      `prompts/trauma_v1.txt`, `--no-thinking`)
    - 65/197 included by LLM (33% inclusion rate — higher than Boeckle
      because Ludwig search terms are narrower/more topical)
-   - DOI resolver had 4 collision bugs (now fixed); see
-     `data/ludwig_included_studies_resolved.csv`
+   - DOI resolver rewritten to use CrossRef key-based lookup
+     (original positional indexing caused 7 collision errors)
 
 ### Methods paper (if pursued)
 

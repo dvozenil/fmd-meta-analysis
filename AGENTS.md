@@ -59,10 +59,11 @@ PI: Petr Sojka. Student lead: David Voženílek.
 
 - **Boeckle validation complete:** 25/25 sensitivity, 50-record human
   comparison with 0 LLM misses. Qwen 3.5 122B is the validated model.
-- **Ludwig cross-validation complete:** 14/14 = 100% sensitivity on held-out
+- **Ludwig cross-validation complete:** 15/15 = 100% sensitivity on held-out
   benchmark. Search run (`fnd_search_20260528_111459/`): 197 deduplicated
-  records, 14/34 Ludwig studies matched (20 unfindable via title/abstract —
-  terms only in full text). DOI resolver bugs fixed (4 collision errors).
+  records, 15/34 Ludwig studies matched (19 unfindable via title/abstract —
+  terms only in full text). DOI resolver rewritten to use CrossRef key-based
+  lookup (original had 7 collision errors from positional indexing).
 - **Methods paper planned:** dual-benchmark model-ladder comparison
   (5 model classes x 3 prompts x 2 benchmarks). Design in
   `docs/methods_paper_plan.md`.
