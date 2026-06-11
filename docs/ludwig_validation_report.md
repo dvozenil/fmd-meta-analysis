@@ -1,6 +1,6 @@
 # Ludwig et al. (2018) Search Validation Report
 
-Generated: 2026-06-10 20:11 UTC  
+Generated: 2026-06-11 08:12 UTC  
 Search run: `fnd_search_20260528_111459`
 
 ## Context
@@ -28,7 +28,7 @@ so database-only recall below 100% is expected.
 | scopus | 192 |
 | **After deduplication** | **197** |
 
-## Results: 14/34 studies found
+## Results: 15/34 studies found
 
 ### Matched studies
 
@@ -44,12 +44,13 @@ so database-only recall below 100% is expected.
 | 8 | Nicholson et al. | 2016 | Functional motor disorder | scopus | doi |
 | 9 | Ozcetin et al. | 2009 | Non-epileptic seizures | pubmed | doi |
 | 10 | Plioplys et al. | 2014 | Non-epileptic seizures | scopus | doi |
-| 11 | Say et al. | 2014 | Non-epileptic seizures | pubmed | doi |
-| 12 | Testa et al. | 2012 | Non-epileptic seizures | pubmed | doi |
-| 13 | Betts et al. | 1992 | Non-epileptic seizures | pubmed | title_jaccard(0.62) |
-| 14 | Tojek et al. | 2000 | Non-epileptic seizures | pubmed | title_jaccard(1.00) |
+| 11 | Proenca et al. | 2011 | Non-epileptic seizures | pubmed | doi |
+| 12 | Say et al. | 2014 | Non-epileptic seizures | pubmed | doi |
+| 13 | Testa et al. | 2012 | Non-epileptic seizures | pubmed | doi |
+| 14 | Tojek et al. | 2000 | Non-epileptic seizures | pubmed | doi |
+| 15 | Betts et al. | 1992 | Non-epileptic seizures | pubmed | title_jaccard(0.62) |
 
-### Not found (20 studies)
+### Not found (19 studies)
 
 These studies were likely found by Ludwig via reference-list chasing
 or Science Direct (not directly replicated in our API search).
@@ -70,7 +71,6 @@ or Science Direct (not directly replicated in our API search).
 | Litwin et al. | 2000 | Non-epileptic seizures | Journal of Trauma and Dissociation |
 | McDade et al. | 1992 | Non-epileptic seizures | Seizure |
 | Mokleby et al. | 2002 | Non-epileptic seizures | Epilepsia |
-| Proenca et al. | 2011 | Non-epileptic seizures | Epilepsy and Behavior |
 | Reilly et al. | 1999 | Non-epileptic seizures | Psychological Medicine |
 | Roelofs et al. | 2002 | Functional neurological disorder | American Journal of Psychiatry |
 | Salmon et al. | 2003 | Non-epileptic seizures | Psychosomatic Medicine |
@@ -79,12 +79,12 @@ or Science Direct (not directly replicated in our API search).
 
 ## Conclusion
 
-Database search recovered **14/34** Ludwig-included
-studies (20 not found).
+Database search recovered **15/34** Ludwig-included
+studies (19 not found).
 
 Unrecovered studies are expected: Ludwig identified 20 of their 1189
 initial records through reference-list chasing, and we do not search
 Science Direct directly (partially covered by Scopus and Europe PMC).
 
-This validation set (with the 14 matched studies marked as known
+This validation set (with the 15 matched studies marked as known
 includes) is used downstream to test LLM screening pipeline sensitivity.

@@ -140,24 +140,51 @@ def resolve(
     """Attach ref_doi and ref_year to each study row."""
     unresolved_count = 0
 
+    # Build key-based index: bib_number -> ref entry
+    key_index: dict[int, dict[str, Any]] = {}
+    for ref in refs:
+        m = re.search(r"bib(\d+)", ref.get("key", ""))
+        if m:
+            key_index[int(m.group(1))] = ref
+
     for study in studies:
         ref_numbers = [n.strip() for n in study["ref_number"].split(";")]
         primary_ref_num = int(ref_numbers[0]) if ref_numbers[0] else 0
 
         doi_found = ""
-        # Try direct index lookup first (ref_number maps to position in reference list)
-        if primary_ref_num > 0 and primary_ref_num <= len(refs):
-            ref = refs[primary_ref_num - 1]
+        # Try key-based lookup first (reliable: bib number in CrossRef key field)
+        if primary_ref_num in key_index:
+            ref = key_index[primary_ref_num]
             if match_ref_to_study(ref, study):
                 doi_found = ref.get("DOI", "") or ""
 
-        # If direct lookup failed, scan all refs for a match
+        # If key lookup failed, try secondary ref numbers (e.g., "54;55")
         if not doi_found:
-            for ref in refs:
-                if match_ref_to_study(ref, study):
-                    doi_found = ref.get("DOI", "") or ""
-                    if doi_found:
+            for rn_str in ref_numbers[1:]:
+                rn = int(rn_str) if rn_str.isdigit() else 0
+                if rn in key_index:
+                    ref = key_index[rn]
+                    if match_ref_to_study(ref, study):
+                        doi_found = ref.get("DOI", "") or ""
                         break
+
+        # Last resort: scan all refs (with stricter threshold to avoid
+        # false matches among papers on similar topics)
+        if not doi_found:
+            best_doi = ""
+            best_score = 0.0
+            for ref in refs:
+                ref_doi = ref.get("DOI", "") or ""
+                if not ref_doi:
+                    continue
+                ref_title = ref.get("article-title", "") or ""
+                if ref_title:
+                    score = _title_jaccard(ref_title, study["title"])
+                    if score > best_score:
+                        best_score = score
+                        best_doi = ref_doi
+            if best_score >= 0.7:
+                doi_found = best_doi
 
         study["ref_doi"] = doi_found
         study["ref_year"] = study["year"]
