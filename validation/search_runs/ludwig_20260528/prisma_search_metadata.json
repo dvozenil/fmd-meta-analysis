@@ -1,0 +1,41 @@
+{
+  "run_id": "20260528_111459",
+  "search_mode": "ludwig_validation",
+  "search_profile": "Ludwig et al. 2018 trauma-in-FND validation",
+  "search_date": "2026-05-28T09:17:37.709600+00:00",
+  "search_range": "inception to 2016/11/04",
+  "databases_searched": [
+    "pubmed",
+    "europepmc",
+    "wos",
+    "scopus"
+  ],
+  "databases_not_automated": [
+    "PsycINFO (searched manually via OVID/EBSCOhost)"
+  ],
+  "queries": {
+    "pubmed": "(\"psychogenic\"[tiab] OR \"conversion disorder\"[tiab] OR \"non-epileptic\"[tiab]) AND (\"abuse\"[tiab] OR \"life event\"[tiab]) AND (\"control\"[tiab] OR \"controlled\"[tiab] OR \"case-control\"[tiab]) AND (\"1800/01/01\"[Date - Publication] : \"2016/11/04\"[Date - Publication])",
+    "europepmc": "(TITLE_ABS:(\"psychogenic\" OR \"conversion disorder\" OR \"non-epileptic\")) AND (TITLE_ABS:(\"abuse\" OR \"life event\")) AND (TITLE_ABS:(\"control\" OR \"controlled\" OR \"case-control\")) AND (PUB_YEAR:[1800 TO 2016])",
+    "wos": "TS=(\"psychogenic\" OR \"conversion disorder\" OR \"non-epileptic\") AND TS=(\"abuse\" OR \"life event\") AND TS=(\"control\" OR \"controlled\" OR \"case-control\") AND PY=1800-2016",
+    "scopus": "(TITLE-ABS-KEY(\"psychogenic\" OR \"conversion disorder\" OR \"non-epileptic\")) AND (TITLE-ABS-KEY(\"abuse\" OR \"life event\")) AND (TITLE-ABS-KEY(\"control\" OR \"controlled\" OR \"case-control\")) AND PUBYEAR < 2017"
+  },
+  "records_per_database": {
+    "pubmed": 34,
+    "europepmc": 33,
+    "wos": 0,
+    "scopus": 192
+  },
+  "deduplication": {
+    "total_raw": 259,
+    "unique": 197,
+    "duplicates_removed": 62,
+    "doi_collisions_rescued": 0
+  },
+  "filters_applied": {
+    "language": "None at search stage \u2014 apply during screening",
+    "date": "inception to 2016/11/04",
+    "query_structure": "3-block AND (FND x stressor x study-design)",
+    "screening_filters": "Language (English) applied during screening."
+  },
+  "notes": "Ludwig validation mode replicates the search strategy from Ludwig et al. (2018) Lancet Psychiatry (trauma/stressors in FND). Uses a 3-block AND query: FND terms x stressor terms x study-design terms. Date range: inception to 2016/11/04. Language filters are NOT applied at search stage."
+}

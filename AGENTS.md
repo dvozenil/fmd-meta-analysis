@@ -95,6 +95,13 @@ PI: Petr Sojka. Student lead: David Voženílek.
 4. **Methods paper model runs** (if pursued): add WMCC metrics, run model
    ladder, analyze per `docs/methods_paper_plan.md`.
 
+## Validation archive
+
+All validation data, scripts, prompts, search runs, and results are
+archived in `validation/` as a self-contained reproduction package.
+See `validation/README.md` for full instructions. The git tag
+`v0.1-validation-complete` marks the exact repo state.
+
 ## Gotchas
 
 - Scopus abstracts require institutional VPN. The script handles missing

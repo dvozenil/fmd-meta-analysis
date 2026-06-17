@@ -1,0 +1,6 @@
+{
+  "pubmed": "(\"psychogenic\"[tiab] OR \"conversion disorder\"[tiab] OR \"non-epileptic\"[tiab]) AND (\"abuse\"[tiab] OR \"life event\"[tiab]) AND (\"control\"[tiab] OR \"controlled\"[tiab] OR \"case-control\"[tiab]) AND (\"1800/01/01\"[Date - Publication] : \"2016/11/04\"[Date - Publication])",
+  "europepmc": "(TITLE_ABS:(\"psychogenic\" OR \"conversion disorder\" OR \"non-epileptic\")) AND (TITLE_ABS:(\"abuse\" OR \"life event\")) AND (TITLE_ABS:(\"control\" OR \"controlled\" OR \"case-control\")) AND (PUB_YEAR:[1800 TO 2016])",
+  "wos": "TS=(\"psychogenic\" OR \"conversion disorder\" OR \"non-epileptic\") AND TS=(\"abuse\" OR \"life event\") AND TS=(\"control\" OR \"controlled\" OR \"case-control\") AND PY=1800-2016",
+  "scopus": "(TITLE-ABS-KEY(\"psychogenic\" OR \"conversion disorder\" OR \"non-epileptic\")) AND (TITLE-ABS-KEY(\"abuse\" OR \"life event\")) AND (TITLE-ABS-KEY(\"control\" OR \"controlled\" OR \"case-control\")) AND PUBYEAR < 2017"
+}

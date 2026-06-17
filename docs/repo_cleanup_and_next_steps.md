@@ -150,3 +150,14 @@ Mavroudis 2024 had 8 VBM studies with narrow terms.
    validate on both Boeckle and Ludwig benchmarks, evaluate per
    LLM4SCREENLIT recommendations. Target: Research Synthesis Methods or
    Systematic Reviews.
+
+## Validation archive
+
+All validation data, scripts, prompts, search runs, and LLM outputs are
+archived in `validation/` as a self-contained reproduction package. See
+`validation/README.md` for full reproduction instructions.
+
+The git tag `v0.1-validation-complete` marks the exact repo state when
+validation was finalized. When production work begins, validation modes
+may be removed from the main scripts; the `validation/` folder retains
+frozen copies of everything needed to re-run independently.

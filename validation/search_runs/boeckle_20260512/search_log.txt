@@ -1,0 +1,67 @@
+2026-05-12 15:45:42,154 | INFO | Search mode: full
+2026-05-12 15:45:42,155 | INFO | Date range: inception to 2015/08/31
+2026-05-12 15:45:42,155 | INFO | Run ID: 20260512_154542
+2026-05-12 15:45:42,156 | INFO | Output: /Users/dvozenil/Projects/FMD_meta/fnd_search_20260512_154542
+2026-05-12 15:45:42,156 | INFO | PubMed query: (("Conversion Disorder"[MeSH] OR "Dissociative Disorders"[MeSH] OR "functional neurological disorder"[tiab] OR "functional neurological symptom disorder"[tiab] OR "conversion disorder"[tiab] OR "disso...
+2026-05-12 15:45:42,658 | INFO | PubMed: 306 hits, retrieving 306 records
+2026-05-12 15:45:44,008 | INFO | PubMed: fetched 200/306
+2026-05-12 15:45:45,110 | INFO | PubMed: fetched 306/306
+2026-05-12 15:45:45,111 | INFO | Europe PMC query: (TITLE_ABS:("functional neurological disorder" OR "functional neurological symptom disorder" OR "conversion disorder" OR "dissociative motor disorder" OR "dissociative convulsion" OR "dissociative con...
+2026-05-12 15:45:47,303 | INFO | Europe PMC: retrieved 113 so far
+2026-05-12 15:45:47,306 | WARNING | WOS_API_KEY not set — skipping Web of Science
+2026-05-12 15:45:47,307 | INFO | Scopus query: (TITLE-ABS-KEY("functional neurological disorder" OR "functional neurological symptom disorder" OR "conversion disorder" OR "dissociative motor disorder" OR "dissociative convulsion" OR "dissociative ...
+2026-05-12 15:45:47,308 | INFO | Scopus page size reduced to 25 to match the service-level maximum
+2026-05-12 15:45:48,417 | INFO | Scopus: 25/577
+2026-05-12 15:45:49,816 | INFO | Scopus: 50/577
+2026-05-12 15:45:51,147 | INFO | Scopus: 75/577
+2026-05-12 15:45:52,528 | INFO | Scopus: 100/577
+2026-05-12 15:45:53,994 | INFO | Scopus: 125/577
+2026-05-12 15:45:55,338 | INFO | Scopus: 150/577
+2026-05-12 15:45:57,034 | INFO | Scopus: 175/577
+2026-05-12 15:45:58,328 | INFO | Scopus: 200/577
+2026-05-12 15:45:59,731 | INFO | Scopus: 225/577
+2026-05-12 15:46:01,045 | INFO | Scopus: 250/577
+2026-05-12 15:46:02,446 | INFO | Scopus: 275/577
+2026-05-12 15:46:03,936 | INFO | Scopus: 300/577
+2026-05-12 15:46:05,237 | INFO | Scopus: 325/577
+2026-05-12 15:46:06,618 | INFO | Scopus: 350/577
+2026-05-12 15:46:07,846 | INFO | Scopus: 375/577
+2026-05-12 15:46:09,109 | INFO | Scopus: 400/577
+2026-05-12 15:46:10,347 | INFO | Scopus: 425/577
+2026-05-12 15:46:11,618 | INFO | Scopus: 450/577
+2026-05-12 15:46:12,888 | INFO | Scopus: 475/577
+2026-05-12 15:46:14,172 | INFO | Scopus: 500/577
+2026-05-12 15:46:15,483 | INFO | Scopus: 525/577
+2026-05-12 15:46:16,785 | INFO | Scopus: 550/577
+2026-05-12 15:46:18,247 | INFO | Scopus: 575/577
+2026-05-12 15:46:19,187 | INFO | Scopus: 577/577
+2026-05-12 15:46:19,190 | INFO | Total raw records across all DBs: 996
+2026-05-12 15:46:19,195 | INFO | After dedup: 709 unique records (287 duplicates removed, 0 DOI collisions rescued)
+2026-05-12 15:46:19,195 | INFO | Fetching abstracts for 381 Scopus-only records (post-dedup)
+2026-05-12 15:46:19,196 | INFO | Scopus: fetching abstracts for 381 records via Abstract Retrieval API
+2026-05-12 15:46:20,307 | INFO | Scopus Abstract Retrieval: using view=META_ABS
+2026-05-12 15:46:58,903 | INFO |   Abstract retrieval progress: 50/381 (fetched=37, failed=13)
+2026-05-12 15:47:38,249 | INFO |   Abstract retrieval progress: 100/381 (fetched=74, failed=26)
+2026-05-12 15:48:17,672 | INFO |   Abstract retrieval progress: 150/381 (fetched=111, failed=39)
+2026-05-12 15:48:56,880 | INFO |   Abstract retrieval progress: 200/381 (fetched=151, failed=49)
+2026-05-12 15:49:35,645 | INFO |   Abstract retrieval progress: 250/381 (fetched=186, failed=64)
+2026-05-12 15:50:14,267 | INFO |   Abstract retrieval progress: 300/381 (fetched=225, failed=75)
+2026-05-12 15:50:52,709 | INFO |   Abstract retrieval progress: 350/381 (fetched=260, failed=90)
+2026-05-12 15:51:17,764 | INFO | Scopus Abstract Retrieval done: 285 abstracts fetched, 96 unavailable out of 381 attempted
+2026-05-12 15:51:17,777 | INFO | Wrote 306 raw records from pubmed -> fnd_search_20260512_154542/raw_pubmed.csv
+2026-05-12 15:51:17,780 | INFO | Wrote 113 raw records from europepmc -> fnd_search_20260512_154542/raw_europepmc.csv
+2026-05-12 15:51:17,781 | INFO | Wrote 0 raw records from wos -> fnd_search_20260512_154542/raw_wos.csv
+2026-05-12 15:51:17,790 | INFO | Wrote 577 raw records from scopus -> fnd_search_20260512_154542/raw_scopus.csv
+2026-05-12 15:51:17,808 | INFO | Wrote 709 deduplicated records -> fnd_search_20260512_154542/records_deduplicated.csv
+2026-05-12 15:51:17,810 | INFO | Wrote RIS export -> fnd_search_20260512_154542/records_deduplicated.ris
+2026-05-12 15:51:17,811 | INFO | Wrote PRISMA metadata -> fnd_search_20260512_154542/prisma_search_metadata.json
+2026-05-12 15:51:17,811 | INFO | ============================================================
+2026-05-12 15:51:17,814 | INFO | PRISMA flow diagram numbers:
+2026-05-12 15:51:17,814 | INFO |   Records identified from pubmed: 306
+2026-05-12 15:51:17,814 | INFO |   Records identified from europepmc: 113
+2026-05-12 15:51:17,814 | INFO |   Records identified from wos: 0
+2026-05-12 15:51:17,815 | INFO |   Records identified from scopus: 577
+2026-05-12 15:51:17,815 | INFO |   Records after duplicates removed: 709
+2026-05-12 15:51:17,815 | INFO | ============================================================
+2026-05-12 15:51:17,816 | INFO | Next step: import records_deduplicated.ris into Rayyan or ASReview
+2026-05-12 15:51:17,816 | INFO | for title/abstract screening.

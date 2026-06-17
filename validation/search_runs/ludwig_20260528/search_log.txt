@@ -1,0 +1,56 @@
+2026-05-28 11:14:59,028 | INFO | Search mode: ludwig_validation
+2026-05-28 11:14:59,028 | INFO | Using Ludwig et al. (2018) trauma-in-FND validation terms (3-block query)
+2026-05-28 11:14:59,028 | INFO | Date range: inception to 2016/11/04
+2026-05-28 11:14:59,028 | INFO | Run ID: 20260528_111459
+2026-05-28 11:14:59,028 | INFO | Output: /Users/dvozenil/Projects/FMD_meta/fnd_search_20260528_111459
+2026-05-28 11:14:59,028 | INFO | PubMed query: ("psychogenic"[tiab] OR "conversion disorder"[tiab] OR "non-epileptic"[tiab]) AND ("abuse"[tiab] OR "life event"[tiab]) AND ("control"[tiab] OR "controlled"[tiab] OR "case-control"[tiab]) AND ("1800/0...
+2026-05-28 11:14:59,750 | INFO | PubMed: 34 hits, retrieving 34 records
+2026-05-28 11:15:00,786 | INFO | PubMed: fetched 34/34
+2026-05-28 11:15:00,786 | INFO | Europe PMC query: (TITLE_ABS:("psychogenic" OR "conversion disorder" OR "non-epileptic")) AND (TITLE_ABS:("abuse" OR "life event")) AND (TITLE_ABS:("control" OR "controlled" OR "case-control")) AND (PUB_YEAR:[1800 TO 2...
+2026-05-28 11:15:01,914 | INFO | Europe PMC: retrieved 33 so far
+2026-05-28 11:15:01,917 | WARNING | WOS_API_KEY not set — skipping Web of Science
+2026-05-28 11:15:01,918 | INFO | Scopus query: (TITLE-ABS-KEY("psychogenic" OR "conversion disorder" OR "non-epileptic")) AND (TITLE-ABS-KEY("abuse" OR "life event")) AND (TITLE-ABS-KEY("control" OR "controlled" OR "case-control")) AND PUBYEAR < 2...
+2026-05-28 11:15:01,918 | INFO | Scopus page size reduced to 25 to match the service-level maximum
+2026-05-28 11:15:03,465 | INFO | Scopus: 25/192
+2026-05-28 11:15:04,888 | INFO | Scopus: 50/192
+2026-05-28 11:15:06,244 | INFO | Scopus: 75/192
+2026-05-28 11:15:07,453 | INFO | Scopus: 100/192
+2026-05-28 11:15:08,733 | INFO | Scopus: 125/192
+2026-05-28 11:15:09,953 | INFO | Scopus: 150/192
+2026-05-28 11:15:11,227 | INFO | Scopus: 175/192
+2026-05-28 11:15:12,343 | INFO | Scopus: 192/192
+2026-05-28 11:15:12,344 | INFO | ============================================================
+2026-05-28 11:15:12,344 | INFO | Search results summary:
+2026-05-28 11:15:12,344 | INFO |   pubmed: 34 records
+2026-05-28 11:15:12,344 | INFO |   europepmc: 33 records
+2026-05-28 11:15:12,344 | INFO |   wos: 0 records
+2026-05-28 11:15:12,344 | INFO |   scopus: 192 records
+2026-05-28 11:15:12,344 | INFO |   TOTAL: 259 raw records
+2026-05-28 11:15:12,344 | INFO | ============================================================
+2026-05-28 11:15:12,344 | INFO | Scopus returned 192 records. Abstract enrichment requires one API call per record and may take a while.
+2026-05-28 11:15:16,064 | INFO | Total raw records across all DBs: 259
+2026-05-28 11:15:16,066 | INFO | After dedup: 197 unique records (62 duplicates removed, 0 DOI collisions rescued)
+2026-05-28 11:15:16,066 | INFO | Fetching abstracts for 161 Scopus-only records (post-dedup)
+2026-05-28 11:15:16,066 | INFO | Scopus: fetching abstracts for 161 records via Abstract Retrieval API
+2026-05-28 11:15:16,604 | INFO | Scopus Abstract Retrieval: using view=META_ABS
+2026-05-28 11:16:01,076 | INFO |   Abstract retrieval progress: 50/161 (fetched=48, failed=2)
+2026-05-28 11:16:49,721 | INFO |   Abstract retrieval progress: 100/161 (fetched=98, failed=2)
+2026-05-28 11:17:28,822 | INFO |   Abstract retrieval progress: 150/161 (fetched=148, failed=2)
+2026-05-28 11:17:37,683 | INFO | Scopus Abstract Retrieval done: 159 abstracts fetched, 2 unavailable out of 161 attempted
+2026-05-28 11:17:37,692 | INFO | Wrote 34 raw records from pubmed -> fnd_search_20260528_111459/raw_pubmed.csv
+2026-05-28 11:17:37,696 | INFO | Wrote 33 raw records from europepmc -> fnd_search_20260528_111459/raw_europepmc.csv
+2026-05-28 11:17:37,696 | INFO | Wrote 0 raw records from wos -> fnd_search_20260528_111459/raw_wos.csv
+2026-05-28 11:17:37,703 | INFO | Wrote 192 raw records from scopus -> fnd_search_20260528_111459/raw_scopus.csv
+2026-05-28 11:17:37,709 | INFO | Wrote 197 deduplicated records -> fnd_search_20260528_111459/records_deduplicated.csv
+2026-05-28 11:17:37,709 | INFO | Wrote RIS export -> fnd_search_20260528_111459/records_deduplicated.ris
+2026-05-28 11:17:37,709 | INFO | Wrote PRISMA metadata -> fnd_search_20260528_111459/prisma_search_metadata.json
+2026-05-28 11:17:37,709 | INFO | ============================================================
+2026-05-28 11:17:37,709 | INFO | PRISMA flow diagram numbers:
+2026-05-28 11:17:37,709 | INFO |   Records identified from pubmed: 34
+2026-05-28 11:17:37,709 | INFO |   Records identified from europepmc: 33
+2026-05-28 11:17:37,709 | INFO |   Records identified from wos: 0
+2026-05-28 11:17:37,709 | INFO |   Records identified from scopus: 192
+2026-05-28 11:17:37,709 | INFO |   Records after duplicates removed: 197
+2026-05-28 11:17:37,709 | INFO | ============================================================
+2026-05-28 11:17:37,709 | INFO | Next step: import records_deduplicated.ris into Rayyan or ASReview
+2026-05-28 11:17:37,709 | INFO | for title/abstract screening.
