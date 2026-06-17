@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -44,16 +45,18 @@ SYSTEM_PROMPT = """You are screening titles and abstracts for a systematic revie
 Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
 
 Include candidate if the abstract plausibly describes:
-- Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
-- A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
-- Primary empirical research.
+- I1: Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
+- I2: A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
+- I3: Primary empirical research.
 
 Exclude if clearly:
-- Not FND/conversion/functional neurological symptoms.
-- Not neuroimaging of the brain.
-- Review/editorial/commentary/protocol only.
-- Animal-only, pediatric-only, or case report only.
-- Treatment/social/clinical paper with no neuroimaging data.
+- E1: Not FND/conversion/functional neurological symptoms.
+- E2: Not neuroimaging of the brain.
+- E3: Review/editorial/commentary/protocol only.
+- E4: Animal-only, pediatric-only, or case report only.
+- E5: Treatment/social/clinical paper with no neuroimaging data.
+
+For every response, populate inclusion_criteria_applied with the IDs (I1, I2, I3) of inclusion criteria the study appears to meet, and exclusion_criteria_applied with the IDs (E1–E5) of exclusion criteria that clearly apply. If none apply, use an empty array [].
 
 Coordinates are usually not visible in abstracts. Mark coordinate_present and coordinate_space as "unclear" unless the abstract explicitly says MNI/Talairach/coordinates/peak coordinates.
 
@@ -67,6 +70,8 @@ Return exactly one JSON object with this schema:
   "confidence": 0.0,
   "reason": "short rationale",
   "exclusion_reason": "wrong_population | wrong_modality | not_primary_research | pediatric_only | case_report | no_human_data | not_fnd | other | null",
+  "inclusion_criteria_applied": ["I1", "I2", "I3"],
+  "exclusion_criteria_applied": ["E1", "E2", "E3", "E4", "E5"],
   "modality_tags": ["fMRI | sMRI | VBM | PET | SPECT | DTI | resting_state | connectivity | EEG | other"],
   "population_tags": ["FND | PNES | functional_movement | functional_sensory | mixed | other"],
   "design_tags": ["case_control | within_subject | longitudinal | randomized_trial | review | case_report | protocol | other"],
@@ -152,10 +157,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return items
 
 
+_write_lock = threading.Lock()
+
+
 def append_jsonl(path: Path, item: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    with _write_lock:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
 def completed_record_ids(path: Path) -> set[str]:
@@ -212,6 +221,15 @@ def normalize_and_validate_decision(decision: dict[str, Any]) -> tuple[dict[str,
         for tag in tags:
             normalized_tags.append(VALUE_NORMALIZATIONS.get((key, tag), tag))
         decision[key] = normalized_tags
+
+    for key in ("inclusion_criteria_applied", "exclusion_criteria_applied"):
+        val = decision.get(key)
+        if not isinstance(val, list):
+            decision[key] = []
+            if val is not None:
+                warnings.append(f"{key} was not a list, reset to []")
+        else:
+            decision[key] = [v for v in val if isinstance(v, str)]
 
     if decision.get("decision") in {"include_candidate", "unclear"}:
         if decision.get("needs_human_review") is not True:
