@@ -20,6 +20,14 @@ v0.1-validation-complete` as an alternative way to access the full state.
 
 Model: Qwen 3.5 122B via e-INFRA MetaCentrum (`https://llm.ai.e-infra.cz/v1`)
 
+### Criteria-ID revalidation (2026-06-17)
+
+Prompts were updated to label each inclusion/exclusion criterion with a
+stable ID (I1–I3, E1–E5/E7) and the output schema now includes
+`inclusion_criteria_applied` and `exclusion_criteria_applied` arrays.
+Sensitivity was re-verified on both benchmarks with identical results
+(40/40, 100%). Results are in `data/criteria_ids/`.
+
 ---
 
 ## Directory Structure
@@ -49,10 +57,13 @@ validation/
 │   ├── validation_screening_set.jsonl        # 709 records, 25 gold-labeled
 │   ├── validation_screening_set_50.jsonl     # 50-record pilot subset
 │   ├── human_screening_sample_50.csv         # Human blind screening sample
-│   └── pilot/                                # Model comparison outputs
-│       ├── qwen3_5_122b_thinking_off_FULL-VALIDATION.jsonl
-│       ├── qwen3_5_122b_thinking_off.jsonl
-│       └── gemma4_thinking_off.jsonl
+│   ├── pilot/                                # Model comparison outputs
+│   │   ├── qwen3_5_122b_thinking_off_FULL-VALIDATION.jsonl
+│   │   ├── qwen3_5_122b_thinking_off.jsonl
+│   │   └── gemma4_thinking_off.jsonl
+│   └── criteria_ids/                         # Criteria-ID revalidation (2026-06-17)
+│       ├── boeckle_criteria_ids.jsonl        # 709 records, 25/25 strict
+│       └── ludwig_criteria_ids.jsonl         # 197 records, 15/15 strict
 ├── prompts/
 │   ├── neuroimaging_v1.txt    # Boeckle benchmark prompt
 │   └── trauma_v1.txt          # Ludwig benchmark prompt
