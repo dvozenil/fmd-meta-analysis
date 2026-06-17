@@ -29,31 +29,20 @@ fnd_meta_search.py          # PRISMA-compliant API search script (PubMed, Europe
 requirements.txt            # Python dependencies
 prompts/
   neuroimaging_v1.txt       # Production neuroimaging screening prompt
-  trauma_v1.txt             # Ludwig cross-validation screening prompt
 scripts/
-  llm_screen_abstracts.py          # LLM title/abstract screening (OpenAI-compatible)
-  validate_os_recall.py            # Cross-reference results vs Boeckle Table 1
-  resolve_os_references.py         # Fetch OS reference DOIs from CrossRef
-  resolve_ludwig_references.py     # Fetch Ludwig (2018) reference DOIs from CrossRef
-  validate_ludwig_recall.py        # Cross-reference results vs Ludwig (2018)
-  check_pilot_results.py           # Quick accuracy check for pilot runs
-  analyze_full_validation.py       # Full validation deep-dive analysis
-  prepare_human_screening_sample.py # Generate stratified human screening sample
-  compare_human_llm.py             # Human vs LLM decision comparison
+  llm_screen_abstracts.py   # LLM title/abstract screening (OpenAI-compatible)
 docs/
   repo_cleanup_and_next_steps.md   # Current status and roadmap
   methods_paper_plan.md            # Model-comparison methods paper design
-  os_validation_report.md          # OS recall validation report
-  validation_strategy_notes.md     # Validation conclusions
+  llm_screening_protocol.md       # Screening execution protocol
   references/                      # Literature reviews and source PDFs
-data/
-  table_of_OS_studies.csv                # OS Table 1 (49 studies)
-  table_of_OS_studies_resolved.csv       # OS Table 1 with DOIs
-  validation_screening_set.jsonl         # 709 records, 25 gold-label includes
-  ludwig_included_studies.csv            # Ludwig (2018) 34 case-control studies
-  ludwig_included_studies_resolved.csv   # Ludwig studies with DOIs
-  ludwig_2018_references_crossref.json   # CrossRef API cache
-  pilot/                                 # Model pilot outputs
+validation/                        # Self-contained validation archive
+  README.md                        # Full reproduction instructions
+  scripts/                         # Frozen scripts (search, screener, validators)
+  data/                            # Gold standards, screening results, pilots
+  prompts/                         # Prompts used (neuroimaging + trauma)
+  search_runs/                     # Archived search outputs (Boeckle + Ludwig)
+  docs/                            # Validation reports
 ```
 
 Source PDFs are kept locally in [docs/references/](docs/references/README.md) and are not versioned.
@@ -88,7 +77,7 @@ python fnd_meta_search.py --full --auto
 
 The `os_table_recall` mode exists as a reference for how we attempted to
 replicate the OS search and why exact replication is not viable. See
-[docs/os_validation_report.md](docs/os_validation_report.md) for details.
+[validation/docs/os_validation_report.md](validation/docs/os_validation_report.md) for details.
 
 The `ludwig_validation` mode implements the Ludwig et al. (2018) search
 strategy (FND x stressor x study-design, inception to Nov 2016) for
@@ -131,19 +120,20 @@ Documented in the [Notion protocol page](https://app.notion.com/p/352cf8786b8181
 - **Screening:** AI-assisted dual screening (LLM + human), validated against original study results
 - **Citation chasing:** backward (reference lists) + forward (Google Scholar "Cited by")
 
-## Search validation
+## Validation
 
-We validated our search strategy by running the `full` production terms with the
-OS cutoff date (inception to 2015/08/31) and cross-referencing against the 49
-studies in Boeckle et al. Table 1. Result: **33/35 in-scope studies recovered**.
-The 16 unrecovered studies are all out of scope (EEG/MEG/CT imaging or non-FND
-diagnoses like body dysmorphic disorder). See
-[docs/os_validation_report.md](docs/os_validation_report.md) for the full
-analysis.
+We validated both the search strategy and the LLM screening pipeline against
+two independent gold standards:
 
-The validation set (`data/validation_screening_set.jsonl`) has the 33 matched
-OS studies pre-labeled as `include_candidate` for LLM pipeline sensitivity
-testing.
+1. **Boeckle et al. (2016)** — 33/35 in-scope neuroimaging studies recovered
+   by our search terms. The 16 unrecovered studies are out of scope
+   (EEG/MEG/CT or non-FND diagnoses).
+2. **Ludwig et al. (2018)** — 15/15 findable trauma/stressor studies correctly
+   included by the LLM screener (100% sensitivity).
+
+All validation materials (scripts, data, prompts, search runs, reports) are
+archived in [`validation/`](validation/README.md) with full reproduction
+instructions.
 
 For the current working state, see [docs/repo_cleanup_and_next_steps.md](docs/repo_cleanup_and_next_steps.md).
 

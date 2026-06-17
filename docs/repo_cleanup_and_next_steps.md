@@ -20,46 +20,18 @@ on two independent benchmarks.
   search or reference-chasing — unfindable via title/abstract)
 - Independently validates generalization across FND sub-domains
 
-## Scripts and data
+## Scripts and data (production)
 
 - `fnd_meta_search.py`: search runner (update, full, os_validation,
   ludwig_validation modes).
 - `scripts/llm_screen_abstracts.py`: OpenAI-compatible screening (with
   `--thinking` / `--no-thinking` flags for hybrid models, `--prompt` for
   external prompt files).
-- `scripts/validate_os_recall.py`: cross-references search results against
-  Boeckle et al. (2016) Table 1 using DOI-first matching.
-- `scripts/resolve_os_references.py`: fetches the OS reference list from
-  CrossRef and produces the enriched `table_of_OS_studies_resolved.csv`.
-- `scripts/check_pilot_results.py`: quick accuracy check for pilot runs,
-  supports `--gold` for external gold labels, reports strict and broad-scope
-  sensitivity separately.
-- `scripts/analyze_full_validation.py`: deep-dive analysis of full
-  validation results (tag distributions, population analysis, etc.).
-- `scripts/prepare_human_screening_sample.py`: generates stratified
-  random sample as CSV for human blind screening.
-- `scripts/compare_human_llm.py`: compares human screening CSV with LLM
-  decisions (confusion matrix, disagreement analysis).
-- `docs/validation_strategy_notes.md`: validation results and conclusions.
-- `docs/os_validation_report.md`: validation report (33/49 OS studies recovered).
-- `docs/model_comparison_run.md`: ready-to-run commands for pilot model comparison.
-- `docs/references/`: source PDFs.
-- `data/table_of_OS_studies.csv`: original OS Table 1 (49 studies, no DOIs).
-- `data/table_of_OS_studies_resolved.csv`: enriched version with DOIs from CrossRef.
-- `data/boeckle_2016_references_crossref.json`: cached CrossRef reference data.
-- `data/validation_screening_set.jsonl`: 709 records; 25 `include_candidate`,
-  8 `include_broad_scope`, 676 unlabelled.
-- `data/validation_screening_set_50.jsonl`: pilot subset (15 strict, 5 broad, 30 other).
-- `data/pilot/`: model pilot outputs and full validation run.
-- `data/human_screening_sample_50.csv`: generated sample for blind screening.
-- `scripts/resolve_ludwig_references.py`: resolves Ludwig et al. (2018)
-  included studies to DOIs via CrossRef.
-- `scripts/validate_ludwig_recall.py`: cross-references search results
-  against Ludwig et al. (2018) included studies using DOI-first matching.
-- `data/ludwig_included_studies.csv`: 34 case-control studies from Ludwig
-  et al. (2018) Table 1 / references 27–61.
-- `prompts/neuroimaging_v1.txt`: externalized neuroimaging screening prompt.
-- `prompts/trauma_v1.txt`: Ludwig-specific trauma/stressor screening prompt.
+- `prompts/neuroimaging_v1.txt`: production neuroimaging screening prompt.
+- `docs/references/`: source PDFs and literature reviews.
+
+All validation-specific scripts, data, prompts, and reports are now in
+`validation/`. See `validation/README.md` for the full inventory.
 
 ## Gold label categories
 
