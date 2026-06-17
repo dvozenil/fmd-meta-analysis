@@ -29,31 +29,20 @@ fnd_meta_search.py          # PRISMA-compliant API search script (PubMed, Europe
 requirements.txt            # Python dependencies
 prompts/
   neuroimaging_v1.txt       # Production neuroimaging screening prompt
-  trauma_v1.txt             # Ludwig cross-validation screening prompt
 scripts/
-  llm_screen_abstracts.py          # LLM title/abstract screening (OpenAI-compatible)
-  validate_os_recall.py            # Cross-reference results vs Boeckle Table 1
-  resolve_os_references.py         # Fetch OS reference DOIs from CrossRef
-  resolve_ludwig_references.py     # Fetch Ludwig (2018) reference DOIs from CrossRef
-  validate_ludwig_recall.py        # Cross-reference results vs Ludwig (2018)
-  check_pilot_results.py           # Quick accuracy check for pilot runs
-  analyze_full_validation.py       # Full validation deep-dive analysis
-  prepare_human_screening_sample.py # Generate stratified human screening sample
-  compare_human_llm.py             # Human vs LLM decision comparison
+  llm_screen_abstracts.py   # LLM title/abstract screening (OpenAI-compatible)
 docs/
   repo_cleanup_and_next_steps.md   # Current status and roadmap
   methods_paper_plan.md            # Model-comparison methods paper design
-  os_validation_report.md          # OS recall validation report
-  validation_strategy_notes.md     # Validation conclusions
+  llm_screening_protocol.md       # Screening execution protocol
   references/                      # Literature reviews and source PDFs
-data/
-  table_of_OS_studies.csv                # OS Table 1 (49 studies)
-  table_of_OS_studies_resolved.csv       # OS Table 1 with DOIs
-  validation_screening_set.jsonl         # 709 records, 25 gold-label includes
-  ludwig_included_studies.csv            # Ludwig (2018) 34 case-control studies
-  ludwig_included_studies_resolved.csv   # Ludwig studies with DOIs
-  ludwig_2018_references_crossref.json   # CrossRef API cache
-  pilot/                                 # Model pilot outputs
+validation/                        # Self-contained validation archive
+  README.md                        # Full reproduction instructions
+  scripts/                         # Frozen scripts (search, screener, validators)
+  data/                            # Gold standards, screening results, pilots
+  prompts/                         # Prompts used (neuroimaging + trauma)
+  search_runs/                     # Archived search outputs (Boeckle + Ludwig)
+  docs/                            # Validation reports
 ```
 
 Source PDFs are kept locally in [docs/references/](docs/references/README.md) and are not versioned.

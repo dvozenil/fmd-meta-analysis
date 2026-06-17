@@ -15,12 +15,11 @@ PI: Petr Sojka. Student lead: David Voženílek.
 |------|---------|
 | `fnd_meta_search.py` | Main search script (PubMed, Europe PMC, WoS, Scopus). All search modes live here. |
 | `scripts/llm_screen_abstracts.py` | LLM screening pipeline (OpenAI-compatible). Supports `--prompt`, `--thinking`, `--no-thinking`. |
-| `prompts/neuroimaging_v1.txt` | Production screening prompt (Boeckle benchmark). |
-| `prompts/trauma_v1.txt` | Ludwig cross-validation prompt. |
+| `prompts/neuroimaging_v1.txt` | Production screening prompt. |
 | `docs/repo_cleanup_and_next_steps.md` | Authoritative project status and roadmap. |
 | `docs/methods_paper_plan.md` | Design for the model-comparison methods paper. |
-| `data/validation_screening_set.jsonl` | 709 records, 25 gold-label includes (Boeckle benchmark). |
-| `data/ludwig_included_studies.csv` | 34 gold-label studies (Ludwig benchmark). |
+| `validation/` | Self-contained validation archive (scripts, data, prompts, search runs, reports). |
+| `validation/README.md` | Full reproduction instructions for both benchmarks. |
 
 ## Architecture
 
