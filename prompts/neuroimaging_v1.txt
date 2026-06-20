@@ -3,16 +3,18 @@ You are screening titles and abstracts for a systematic review/meta-analysis of 
 Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
 
 Include candidate if the abstract plausibly describes:
-- Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
-- A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
-- Primary empirical research.
+- I1: Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
+- I2: A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
+- I3: Primary empirical research.
 
 Exclude if clearly:
-- Not FND/conversion/functional neurological symptoms.
-- Not neuroimaging of the brain.
-- Review/editorial/commentary/protocol only.
-- Animal-only, pediatric-only, or case report only.
-- Treatment/social/clinical paper with no neuroimaging data.
+- E1: Not FND/conversion/functional neurological symptoms.
+- E2: Not neuroimaging of the brain.
+- E3: Review/editorial/commentary/protocol only.
+- E4: Animal-only, pediatric-only, or case report only.
+- E5: Treatment/social/clinical paper with no neuroimaging data.
+
+For every response, populate inclusion_criteria_applied with the IDs (I1, I2, I3) of inclusion criteria the study appears to meet, and exclusion_criteria_applied with the IDs (E1–E5) of exclusion criteria that clearly apply. If none apply, use an empty array [].
 
 Coordinates are usually not visible in abstracts. Mark coordinate_present and coordinate_space as "unclear" unless the abstract explicitly says MNI/Talairach/coordinates/peak coordinates.
 
@@ -26,6 +28,8 @@ Return exactly one JSON object with this schema:
   "confidence": 0.0,
   "reason": "short rationale",
   "exclusion_reason": "wrong_population | wrong_modality | not_primary_research | pediatric_only | case_report | no_human_data | not_fnd | other | null",
+  "inclusion_criteria_applied": ["I1", "I2", "I3"],
+  "exclusion_criteria_applied": ["E1", "E2", "E3", "E4", "E5"],
   "modality_tags": ["fMRI | sMRI | VBM | PET | SPECT | DTI | resting_state | connectivity | EEG | other"],
   "population_tags": ["FND | PNES | functional_movement | functional_sensory | mixed | other"],
   "design_tags": ["case_control | within_subject | longitudinal | randomized_trial | review | case_report | protocol | other"],

@@ -34,8 +34,11 @@ PI: Petr Sojka. Student lead: David Voženílek.
   `scripts/validate_ludwig_recall.py`) cross-reference search results against
   gold-standard study lists using DOI-first matching with title fallback.
 - **Prompts** live in `prompts/` as plain text files. They return structured
-  JSON with decision, confidence, reason, exclusion_reason, and domain-specific
-  tags. The JSON schema is embedded in the prompt itself.
+  JSON with decision, confidence, reason, exclusion_reason, domain-specific
+  tags, and criteria-ID arrays (`inclusion_criteria_applied`,
+  `exclusion_criteria_applied`). Each inclusion/exclusion criterion has a
+  stable ID (I1–I3, E1–E5/E7) for traceability. The JSON schema is embedded
+  in the prompt itself.
 
 ## Conventions
 
@@ -54,7 +57,7 @@ PI: Petr Sojka. Student lead: David Voženílek.
 - Screening model output must be valid JSON matching the schema in the prompt.
   Parse failures are treated as "include" (safe default).
 
-## Current state (2026-06-10)
+## Current state (2026-06-17)
 
 - **Boeckle validation complete:** 25/25 sensitivity, 50-record human
   comparison with 0 LLM misses. Qwen 3.5 122B is the validated model.
@@ -63,35 +66,23 @@ PI: Petr Sojka. Student lead: David Voženílek.
   records, 15/34 Ludwig studies matched (19 unfindable via title/abstract —
   terms only in full text). DOI resolver rewritten to use CrossRef key-based
   lookup (original had 7 collision errors from positional indexing).
+- **Criteria-ID traceability added:** Prompts now label each
+  inclusion/exclusion criterion with stable IDs (I1–I3, E1–E5/E7).
+  Screening output includes `inclusion_criteria_applied` and
+  `exclusion_criteria_applied` arrays. Revalidated on both benchmarks
+  with identical 40/40 sensitivity. Results in
+  `validation/data/criteria_ids/`.
+- **Thread-safe output:** `append_jsonl` now uses `threading.Lock` for
+  safe parallel writes.
 - **Methods paper planned:** dual-benchmark model-ladder comparison
   (5 model classes x 3 prompts x 2 benchmarks). Design in
   `docs/methods_paper_plan.md`.
 
 ## What's next
 
-1. **Run the Ludwig cross-validation end-to-end.** Steps:
-   ```bash
-   # Set up credentials
-   export OPENAI_BASE_URL="https://llm.ai.e-infra.cz/v1"
-   export OPENAI_API_KEY="$E_INFRA_API_TOKEN"
-
-   # 1. Build validation JSONL (already done if fnd_search_20260528_111459 exists)
-   python3 scripts/validate_ludwig_recall.py --search-dir fnd_search_20260528_111459
-
-   # 2. Screen with Qwen 3.5 122B using trauma prompt
-   OPENAI_MODEL=qwen3.5-122b python3 scripts/llm_screen_abstracts.py \
-     --input data/ludwig_validation_set.jsonl \
-     --output data/ludwig_screening_results.jsonl \
-     --prompt prompts/trauma_v1.txt \
-     --workers 4 --no-response-format --no-thinking
-
-   # 3. Check sensitivity against gold labels
-   python3 scripts/check_pilot_results.py data/ludwig_screening_results.jsonl \
-     --gold data/ludwig_validation_set.jsonl
-   ```
-2. **Finalize and freeze search terms** for the production meta-analysis.
-3. **Run the production search** (`--full`, no date cutoff) once terms are frozen.
-4. **Methods paper model runs** (if pursued): add WMCC metrics, run model
+1. **Finalize and freeze search terms** for the production meta-analysis.
+2. **Run the production search** (`--full`, no date cutoff) once terms are frozen.
+3. **Methods paper model runs** (if pursued): add WMCC metrics, run model
    ladder, analyze per `docs/methods_paper_plan.md`.
 
 ## Validation archive
@@ -115,14 +106,17 @@ See `validation/README.md` for full instructions. The git tag
   `--no-response-format` in that case.
 - Prompt JSON schemas define the allowed enum values for tags. If you change
   the schema, update both the prompt file and `ALLOWED_VALUES` in the screener.
+- When adding or renaming criteria, update the IDs in the prompt file and
+  re-verify that the screener's `normalize_and_validate_decision()` handles
+  the new arrays correctly.
 
 ## Testing
 
 No formal test suite. Validation is done via:
-- `scripts/validate_os_recall.py` — Boeckle sensitivity check
-- `scripts/validate_ludwig_recall.py` — Ludwig sensitivity check
-- `scripts/compare_human_llm.py` — inter-rater comparison
-- `scripts/check_pilot_results.py --gold <file>` — quick accuracy on subsets
+- `validation/scripts/validate_os_recall.py` — Boeckle sensitivity check
+- `validation/scripts/validate_ludwig_recall.py` — Ludwig sensitivity check
+- `validation/scripts/compare_human_llm.py` — inter-rater comparison
+- `validation/scripts/check_pilot_results.py --gold <file>` — quick accuracy on subsets
 
 ## External links
 
