@@ -3,18 +3,20 @@ You are screening titles and abstracts for a systematic review and meta-analysis
 Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
 
 Include candidate if the abstract plausibly describes ALL of:
-1. Patients with conversion disorder / functional neurological disorder / functional neurological symptom disorder, including motor FND, PNES / psychogenic nonepileptic seizures / functional seizures, functional sensory symptoms, dissociative motor disorder, functional voice disorder, or close legacy terms (psychogenic, hysterical, non-epileptic).
-2. Data on stressful life events OR maltreatment (sexual abuse, physical abuse, emotional neglect, childhood trauma, adverse experiences) comparing cases with at least one control group.
-3. A case-control or controlled study design with at least 10 participants per group.
+- I1: Patients with conversion disorder / functional neurological disorder / functional neurological symptom disorder, including motor FND, PNES / psychogenic nonepileptic seizures / functional seizures, functional sensory symptoms, dissociative motor disorder, functional voice disorder, or close legacy terms (psychogenic, hysterical, non-epileptic).
+- I2: Data on stressful life events OR maltreatment (sexual abuse, physical abuse, emotional neglect, childhood trauma, adverse experiences) comparing cases with at least one control group.
+- I3: A case-control or controlled study design with at least 10 participants per group.
 
 Exclude if clearly:
-- Not about conversion disorder / FND / functional neurological symptoms (e.g., purely somatic symptom disorder, chronic fatigue, irritable bowel syndrome without FND comparison).
-- No comparison or control group (uncontrolled case series, case reports).
-- Review, editorial, commentary, letter, or protocol only.
-- No data on stressful life events, abuse, maltreatment, neglect, or trauma.
-- Data presented only as p-values with no group sizes or frequencies.
-- Animal study only.
-- Explicit duplicate publication of the same data reported in another included study.
+- E1: Not about conversion disorder / FND / functional neurological symptoms (e.g., purely somatic symptom disorder, chronic fatigue, irritable bowel syndrome without FND comparison).
+- E2: No comparison or control group (uncontrolled case series, case reports).
+- E3: Review, editorial, commentary, letter, or protocol only.
+- E4: No data on stressful life events, abuse, maltreatment, neglect, or trauma.
+- E5: Data presented only as p-values with no group sizes or frequencies.
+- E6: Animal study only.
+- E7: Explicit duplicate publication of the same data reported in another included study.
+
+For every response, populate inclusion_criteria_applied with the IDs (I1, I2, I3) of inclusion criteria the study appears to meet, and exclusion_criteria_applied with the IDs (E1–E7) of exclusion criteria that clearly apply. If none apply, use an empty array [].
 
 When uncertain, prefer inclusion. Studies in pediatric populations ARE eligible (Ludwig included pediatric studies).
 
@@ -28,6 +30,8 @@ Return exactly one JSON object with this schema:
   "confidence": 0.0,
   "reason": "short rationale",
   "exclusion_reason": "wrong_population | no_stressor_data | no_control_group | not_primary_research | sample_too_small | duplicate_data | other | null",
+  "inclusion_criteria_applied": ["I1", "I2", "I3"],
+  "exclusion_criteria_applied": ["E1", "E2", "E3", "E4", "E5", "E6", "E7"],
   "population_tags": ["FND | PNES | functional_movement | functional_sensory | functional_voice | mixed | other"],
   "stressor_tags": ["sexual_abuse | physical_abuse | emotional_neglect | childhood_trauma | life_events | maltreatment_general | other"],
   "design_tags": ["case_control | cohort | cross_sectional | review | case_report | protocol | other"],
