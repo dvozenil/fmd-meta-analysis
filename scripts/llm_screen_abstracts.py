@@ -372,7 +372,7 @@ def call_model(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=Path, default=Path("data/test_abstracts_20.jsonl"))
+    parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("data/llm_screening_results.jsonl"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
