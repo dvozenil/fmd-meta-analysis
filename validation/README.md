@@ -4,9 +4,24 @@ Self-contained archive of the LLM screening pipeline validation.
 Everything needed to reproduce or verify the validation results is in this
 directory.
 
-**Git tag:** `v0.1-validation-complete` (2026-06-17) marks the exact repo
-state when this archive was created. You can always `git checkout
-v0.1-validation-complete` as an alternative way to access the full state.
+**Git tags:**
+
+- `v0.1-validation-complete` (2026-06-17) — the exact repo state when this
+  archive was created. `git checkout v0.1-validation-complete` gives the
+  frozen archive exactly as committed.
+- `v0.2-criteria-ids` (2026-06-17) — the criteria-ID revalidation. The root
+  `scripts/llm_screen_abstracts.py` and the prompts were updated to emit
+  `inclusion_criteria_applied` / `exclusion_criteria_applied` arrays, and
+  both benchmarks were re-screened with identical 40/40 sensitivity.
+
+> **Frozen-screener caveat:** The screener inside this archive
+> (`validation/scripts/llm_screen_abstracts.py`) is intentionally frozen at
+> the **pre-criteria-ID `v0.1` state** — it has no `threading.Lock`, no
+> criteria-array normalization, and an older embedded prompt. It reproduces
+> the original 40/40 validation exactly. To reproduce the `v0.2`
+> criteria-ID revalidation instead, use the **root**
+> `scripts/llm_screen_abstracts.py` together with
+> `validation/prompts/neuroimaging_v1.txt` or `validation/prompts/trauma_v1.txt`.
 
 ---
 

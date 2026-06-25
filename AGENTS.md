@@ -89,8 +89,16 @@ PI: Petr Sojka. Student lead: David Voženílek.
 
 All validation data, scripts, prompts, search runs, and results are
 archived in `validation/` as a self-contained reproduction package.
-See `validation/README.md` for full instructions. The git tag
-`v0.1-validation-complete` marks the exact repo state.
+See `validation/README.md` for full instructions. Two git tags mark the
+validation milestones:
+
+- `v0.1-validation-complete` — original 40/40 validation; the frozen
+  archive matches this state.
+- `v0.2-criteria-ids` — criteria-ID revalidation (I1–I3, E1–E5/E7
+  traceability), 40/40 sensitivity maintained. Reproducing this requires
+  the **root** `scripts/llm_screen_abstracts.py` + the
+  `validation/prompts/` prompts (the frozen archive screener is the
+  pre-criteria-ID `v0.1` version).
 
 ## Gotchas
 
