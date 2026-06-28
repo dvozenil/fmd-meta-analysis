@@ -45,7 +45,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 from xml.etree import ElementTree as ET
 
 import requests
@@ -82,10 +82,15 @@ def _parse_args() -> argparse.Namespace:
         "--auto", action="store_true",
         help="Run all steps without interactive confirmation prompts",
     )
+    parser.add_argument(
+        "--queries-only", action="store_true",
+        help="Write queries.json and manual query text files, then exit before API calls",
+    )
     return parser.parse_args()
 
 _cli_args = _parse_args()
 AUTO_MODE = _cli_args.auto
+QUERIES_ONLY = _cli_args.queries_only
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -175,45 +180,109 @@ def retry(max_attempts: int = 3, backoff_base: float = 2.0,
 #   BLOCK C — Optional filters (human, adult, English, date range)
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class SearchTerm:
+    """Search term with optional database-specific renderings."""
+    text: str
+    pubmed: tuple[str, ...] | None = None
+    europepmc: tuple[str, ...] | None = None
+    wos: tuple[str, ...] | None = None
+    scopus: tuple[str, ...] | None = None
+    psycinfo: tuple[str, ...] | None = None
+
+
+TermLike: TypeAlias = str | SearchTerm
+
+
+def T(text: str, **overrides: tuple[str, ...]) -> SearchTerm:
+    return SearchTerm(text, **overrides)
+
+
 # --- Concept A: FND terminology ---------------------------------------------
-FND_TERMS = [
+FND_TERMS: list[TermLike] = [
     # DSM-5 / ICD-11 preferred
-    "functional neurological disorder",
-    "functional neurological symptom disorder",
+    T("functional motor disorder*"),
+    T("functional movement disorder*"),
+    T("psychogenic movement disorder*"),
+    T("psychogenic motor disorder*"),
+    T("conversion disorder*"),
+    T("dissociative motor disorder*"),
+    T("functional neurological disorder*"),
+    T("functional neurologic disorder*"),
+    T("functional neurological symptom disorder*"),
+    "FNSD",
     # DSM-IV / ICD-10
-    "conversion disorder",
-    "dissociative motor disorder",
-    "dissociative convulsion",
-    "dissociative convulsions",
+    T("dissociative convulsion*"),
     # Functional movement disorder spectrum
-    "psychogenic movement disorder",
-    "functional movement disorder",
-    "functional tremor",
-    "psychogenic tremor",
-    "functional dystonia",
-    "psychogenic dystonia",
-    "functional weakness",
-    "functional paralysis",
-    "functional gait disorder",
-    "functional gait",
+    T("functional tremor*"),
+    T("psychogenic tremor*"),
+    T("functional dystoni*"),
+    T("psychogenic dystoni*"),
+    T("functional myoclon*"),
+    T("psychogenic myoclon*"),
+    T("functional jerk*"),
+    T("psychogenic jerk*"),
+    T("functional gait*"),
+    T("psychogenic gait*"),
+    T("functional weakness*"),
+    T("psychogenic weakness*"),
+    T("functional paralys*"),
+    T("psychogenic paralys*"),
+    T("functional pares*"),
+    T("psychogenic pares*"),
+    T("functional parkinsonism*"),
+    T("psychogenic parkinsonism*"),
+    T("functional tic*"),
+    T("psychogenic tic*"),
+    T("functional tic-like behavio*"),
+    T("psychogenic tic-like behavio*"),
+    T("functional chorea*"),
+    T("psychogenic chorea*"),
+    T("functional dyskinesi*"),
+    T("psychogenic dyskinesi*"),
+    T("functional stereotyp*"),
+    T("psychogenic stereotyp*"),
+    "functional sensory",
+    "functional visual",
+    T("functional cognitive disorder*"),
+    T("functional cognitive symptom*"),
+    # Vestibular / dizziness spectrum
+    "persistent postural-perceptual dizziness",
+    "persistent postural perceptual dizziness",
+    "PPPD",
+    "functional dizziness",
+    "psychogenic dizziness",
+    "chronic subjective dizziness",
+    "phobic postural vertigo",
+    T("functional vestibular disorder*"),
     # Seizure variants
-    "psychogenic non-epileptic seizure",
-    "psychogenic nonepileptic seizure",
-    "functional seizure",
-    "dissociative seizure",
-    "pseudoseizure",
-    "pseudoseizures",
-    "nonepileptic attack disorder",
+    T("functional seizure*"),
+    T("psychogenic seizure*"),
+    T("psychogenic non-epileptic seizure*"),
+    T("psychogenic nonepileptic seizure*"),
+    "PNES",
+    T("dissociative seizure*"),
+    T("functional dissociative seizure*"),
+    T("functional/dissociative seizure*"),
+    "FDS",
+    T("non-epileptic attack disorder*"),
+    "NEAD",
+    T("pseudoseizure*"),
     # Historical / legacy terms (needed for recall in older literature)
-    "hysterical paralysis",
-    "hysterical conversion",
-    "motor conversion",
-    "sensory conversion",
+    T("conversion reaction*"),
+    T("motor hysteria*"),
+    T("hysterical paralysis"),
+    T("hysterical conversion"),
+    T("motor conversion"),
+    T("sensory conversion"),
     "astasia-abasia",
+    # Broad sensitivity boosters. Keep these under review during term freeze.
+    T("medically unexplained symptom*"),
+    "non-organic",
 ]
 
 # --- Concept B: Neuroimaging --------------------------------------------------
-IMAGING_TERMS = [
+IMAGING_TERMS: list[TermLike] = [
     # General
     "neuroimaging",
     "brain imaging",
@@ -223,31 +292,78 @@ IMAGING_TERMS = [
     "fMRI",
     "functional MRI",
     "functional magnetic resonance imaging",
+    "BOLD",
+    T("blood oxygen* level depend*"),
+    "task-based",
+    "task-related",
+    "activation likelihood",
+    "neural activation",
+    "brain activation",
     "resting state fMRI",
     "resting-state",
-    "functional connectivity",
+    "rs-fMRI",
+    "rsfMRI",
+    T("functional connectivit*"),
+    T("intrinsic connectivit*"),
+    "default mode network",
+    "DMN",
+    "ALFF",
+    T("amplitude of low frequency fluctuat*"),
+    "fALFF",
+    "ReHo",
+    T("regional homogeneit*"),
+    "seed-based",
+    T("independent component analys*"),
     # MRI — structural
     "structural MRI",
+    "sMRI",
     "structural magnetic resonance",
-    "voxel based morphometry",
+    T("voxel-based morphometr*"),
+    T("voxel based morphometr*"),
     "VBM",
+    T("surface-based morphometr*"),
+    "SBM",
     "cortical thickness",
+    "cortical surface",
+    "cortical volume",
     "grey matter",
     "gray matter",
+    "GMV",
+    "GMD",
     "white matter",
+    "white matter volume",
+    "brain volume",
+    "regional volume",
+    T("morphometr*"),
+    T("neuroanatom*"),
     # Diffusion
+    "DWI",
+    T("diffusion-weighted imag*"),
+    T("diffusion weighted imag*"),
     "diffusion tensor imaging",
+    T("diffusion tensor imag*"),
     "DTI",
-    "diffusion weighted imaging",
-    "tractography",
+    "diffusion MRI",
+    "dMRI",
+    T("tractograph*"),
     "structural connectivity",
+    T("fractional anisotrop*"),
+    T("mean diffusivit*"),
+    T("axial diffusivit*"),
+    T("radial diffusivit*"),
+    "white matter integrity",
+    T("white matter microstructur*"),
+    T("tract-based spatial statistic*"),
+    "TBSS",
+    "NODDI",
     # Nuclear medicine
-    "positron emission tomography",
+    T("positron emission tomograph*"),
     "PET",
     "single photon emission",
     "SPECT",
     # Perfusion
     "arterial spin labeling",
+    "ASL",
     "cerebral blood flow",
     "perfusion",
 ]
@@ -361,12 +477,12 @@ LUDWIG_DESIGN_TERMS = [
 @dataclass
 class SearchTermConfig:
     """Container for search term blocks. block_c is optional (3-block queries)."""
-    block_a: list[str]
-    block_b: list[str]
-    block_c: list[str] | None = None
+    block_a: list[TermLike]
+    block_b: list[TermLike]
+    block_c: list[TermLike] | None = None
 
 
-def _active_terms() -> tuple[list[str], list[str]]:
+def _active_terms() -> tuple[list[TermLike], list[TermLike]]:
     """Return FND and imaging/topic term lists for the current search mode.
 
     For backward compatibility, returns a 2-tuple. Ludwig mode assembles a
@@ -413,20 +529,41 @@ def _scopus_date_filter() -> str:
     return f" AND PUBYEAR < {end + 1}"
 
 
-def _build_wos_phrase_or_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"' for t in terms)
+def _term_variants(term: TermLike, db: str) -> tuple[str, ...]:
+    """Return database-specific renderings for a term."""
+    if isinstance(term, str):
+        return (term,)
+    override = getattr(term, db)
+    return override or (term.text,)
 
 
-def _build_europepmc_phrase_or_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"' for t in terms)
+def _quote_phrase(text: str) -> str:
+    escaped = text.replace('"', r'\"')
+    return f'"{escaped}"'
 
 
-def _build_scopus_phrase_or_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"' for t in terms)
+def _build_phrase_or_block(terms: list[TermLike], db: str) -> str:
+    rendered: list[str] = []
+    for term in terms:
+        rendered.extend(_quote_phrase(variant) for variant in _term_variants(term, db))
+    return " OR ".join(rendered)
 
 
-def _build_pubmed_text_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"[tiab]' for t in terms)
+def _build_pubmed_text_block(terms: list[TermLike]) -> str:
+    rendered: list[str] = []
+    for term in terms:
+        rendered.extend(
+            f'{_quote_phrase(variant)}[tiab]'
+            for variant in _term_variants(term, "pubmed")
+        )
+    return " OR ".join(rendered)
+
+
+def _build_psycinfo_ovid_block(terms: list[TermLike]) -> str:
+    rendered: list[str] = []
+    for term in terms:
+        rendered.extend(_quote_phrase(variant) for variant in _term_variants(term, "psycinfo"))
+    return " OR ".join(rendered)
 
 
 def build_pubmed_query() -> str:
@@ -471,8 +608,8 @@ def build_pubmed_query() -> str:
 def build_wos_query() -> str:
     """Web of Science syntax: TS= searches Topic (title + abstract + keywords)."""
     config = _active_term_config()
-    fnd = _build_wos_phrase_or_block(config.block_a)
-    imag = _build_wos_phrase_or_block(config.block_b)
+    fnd = _build_phrase_or_block(config.block_a, "wos")
+    imag = _build_phrase_or_block(config.block_b, "wos")
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     year_range = _date_filter_year_range().replace(" TO ", "-")
@@ -481,7 +618,7 @@ def build_wos_query() -> str:
     lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LA=(English)"
     query = f'TS=({fnd}) AND TS=({imag})'
     if config.block_c:
-        design = _build_wos_phrase_or_block(config.block_c)
+        design = _build_phrase_or_block(config.block_c, "wos")
         query += f' AND TS=({design})'
     return f'{query}{lang_part}{date_part}'
 
@@ -489,8 +626,8 @@ def build_wos_query() -> str:
 def build_europepmc_query() -> str:
     """Europe PMC syntax: similar to Lucene. Uses TITLE_ABS, PUB_YEAR."""
     config = _active_term_config()
-    fnd = _build_europepmc_phrase_or_block(config.block_a)
-    imag = _build_europepmc_phrase_or_block(config.block_b)
+    fnd = _build_phrase_or_block(config.block_a, "europepmc")
+    imag = _build_phrase_or_block(config.block_b, "europepmc")
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = f" AND (PUB_YEAR:[{_date_filter_year_range()}])"
@@ -498,7 +635,7 @@ def build_europepmc_query() -> str:
     lang_part = '' if SEARCH_MODE in no_lang_modes else ' AND (LANG:"eng")'
     query = f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag}))'
     if config.block_c:
-        design = _build_europepmc_phrase_or_block(config.block_c)
+        design = _build_phrase_or_block(config.block_c, "europepmc")
         query += f' AND (TITLE_ABS:({design}))'
     return f'{query}{lang_part}{date_part}'
 
@@ -506,8 +643,8 @@ def build_europepmc_query() -> str:
 def build_scopus_query() -> str:
     """Scopus syntax: TITLE-ABS-KEY field tag, AND/OR Boolean."""
     config = _active_term_config()
-    fnd = _build_scopus_phrase_or_block(config.block_a)
-    imag = _build_scopus_phrase_or_block(config.block_b)
+    fnd = _build_phrase_or_block(config.block_a, "scopus")
+    imag = _build_phrase_or_block(config.block_b, "scopus")
     if SEARCH_MODE == "os_validation":
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = _scopus_date_filter()
@@ -515,9 +652,37 @@ def build_scopus_query() -> str:
     lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LANGUAGE(english)"
     query = f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag}))'
     if config.block_c:
-        design = _build_scopus_phrase_or_block(config.block_c)
+        design = _build_phrase_or_block(config.block_c, "scopus")
         query += f' AND (TITLE-ABS-KEY({design}))'
     return f'{query}{date_part}{lang_part}'
+
+
+def build_psycinfo_ovid_query() -> str:
+    """Ovid-style copy/paste query for manual PsycINFO searching."""
+    config = _active_term_config()
+    fnd = _build_psycinfo_ovid_block(config.block_a)
+    imag = _build_psycinfo_ovid_block(config.block_b)
+    start_year = SEARCH_START_YEAR or 1800
+    end_year = int(SEARCH_END_DATE[:4])
+    lines = [
+        f"1. ({fnd}).ti,ab.",
+        f"2. ({imag}).ti,ab.",
+    ]
+    if config.block_c:
+        design = _build_psycinfo_ovid_block(config.block_c)
+        lines.extend([
+            f"3. ({design}).ti,ab.",
+            "4. 1 and 2 and 3",
+            "5. limit 4 to english language",
+            f"6. limit 5 to yr=\"{start_year} - {end_year}\"",
+        ])
+    else:
+        lines.extend([
+            "3. 1 and 2",
+            "4. limit 3 to english language",
+            f"5. limit 4 to yr=\"{start_year} - {end_year}\"",
+        ])
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1106,8 +1271,11 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
             f"{SEARCH_START_YEAR}-01-01 to {SEARCH_END_DATE}"
             if SEARCH_START_YEAR else f"inception to {SEARCH_END_DATE}"
         ),
-        "databases_searched": list(queries.keys()),
+        "databases_searched": list(per_db_counts.keys()),
         "databases_not_automated": ["PsycINFO (searched manually via OVID/EBSCOhost)"],
+        "manual_queries_provided": [
+            name for name in queries if name.startswith("manual_")
+        ],
         "queries": queries,
         "records_per_database": per_db_counts,
         "deduplication": dedup_stats,
@@ -1134,6 +1302,22 @@ def _confirm(prompt: str) -> bool:
     return answer in ("y", "yes")
 
 
+def write_query_artifacts(queries: dict[str, str]) -> None:
+    """Write machine-readable and copy/paste query artifacts."""
+    with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
+        json.dump(queries, f, indent=2)
+
+    manual_dir = OUTPUT_DIR / "manual_queries"
+    manual_dir.mkdir(exist_ok=True)
+    manual_files = {
+        "manual_wos": "web_of_science.txt",
+        "manual_psycinfo_ovid": "psycinfo_ovid.txt",
+    }
+    for key, filename in manual_files.items():
+        if key in queries:
+            (manual_dir / filename).write_text(queries[key] + "\n", encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -1152,27 +1336,34 @@ def main() -> None:
     if Entrez.email == "CHANGE_ME@institution.edu":
         log.warning("NCBI_EMAIL not set — update Entrez.email or set NCBI_EMAIL env var")
 
-    queries = {
+    api_queries = {
         "pubmed":    build_pubmed_query(),
         "europepmc": build_europepmc_query(),
         "wos":       build_wos_query(),
         "scopus":    build_scopus_query(),
     }
+    manual_queries = {
+        "manual_wos": build_wos_query(),
+        "manual_psycinfo_ovid": build_psycinfo_ovid_query(),
+    }
+    queries = {**api_queries, **manual_queries}
 
-    with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
-        json.dump(queries, f, indent=2)
+    write_query_artifacts(queries)
     log.info(f"Run ID: {RUN_ID}")
     log.info(f"Output: {OUTPUT_DIR.resolve()}")
+    if QUERIES_ONLY:
+        log.info("Queries-only mode: wrote query artifacts and skipped API calls")
+        return
 
     all_records: list[Record] = []
     all_records_by_db: dict[str, list[Record]] = {}
     per_db: dict[str, int] = {}
 
     clients: dict[str, tuple] = {
-        "pubmed":    (PubMedClient(),       queries["pubmed"]),
-        "europepmc": (EuropePMCClient(),    queries["europepmc"]),
-        "wos":       (WebOfScienceClient(), queries["wos"]),
-        "scopus":    (ScopusClient(),       queries["scopus"]),
+        "pubmed":    (PubMedClient(),       api_queries["pubmed"]),
+        "europepmc": (EuropePMCClient(),    api_queries["europepmc"]),
+        "wos":       (WebOfScienceClient(), api_queries["wos"]),
+        "scopus":    (ScopusClient(),       api_queries["scopus"]),
     }
 
     for name, (client, q) in clients.items():

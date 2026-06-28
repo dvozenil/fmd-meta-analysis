@@ -71,6 +71,9 @@ python fnd_meta_search.py --os_table_recall
 # Ludwig et al. (2018) cross-validation: 3-block query to Nov 2016
 python fnd_meta_search.py --ludwig_validation
 
+# Generate reproducible API/manual queries without calling external APIs
+python fnd_meta_search.py --full --queries-only
+
 # Non-interactive mode (skip confirmation prompts)
 python fnd_meta_search.py --full --auto
 ```
@@ -102,6 +105,8 @@ gracefully; those databases are skipped and logged.
 Each run creates a timestamped folder (`fnd_search_YYYYMMDD_HHMMSS/`) containing:
 
 - `queries.json` — exact Boolean strings used (reproducibility anchor)
+- `manual_queries/` — copy-paste query strings for manually searched databases
+  such as Web of Science and PsycINFO/Ovid
 - `raw_<database>.csv` — per-database results before dedup
 - `records_deduplicated.csv` — unified deduplicated records
 - `records_deduplicated.ris` — RIS export for Rayyan / ASReview
@@ -114,11 +119,11 @@ benchmark fixtures and summaries are documented in [data/README.md](data/README.
 ### Merging manual exports
 
 If Web of Science API access is unavailable or does not return abstracts, run
-the saved WoS query manually in the Web of Science interface and export a CSV
-with as many bibliographic fields as possible: title, abstract, DOI, authors,
-journal/source title, publication year/date, keywords, accession number/UT, and
-URL. The same workflow can be used for PsycINFO or other manually searched
-databases.
+the saved WoS query from `manual_queries/web_of_science.txt` manually in the Web
+of Science interface and export a CSV with as many bibliographic fields as
+possible: title, abstract, DOI, authors, journal/source title, publication
+year/date, keywords, accession number/UT, and URL. The same workflow can be used
+for PsycINFO or other manually searched databases.
 
 Merge manual exports into an existing API search run before screening:
 
