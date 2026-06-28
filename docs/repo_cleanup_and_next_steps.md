@@ -87,11 +87,17 @@ Mavroudis 2024 had 8 VBM studies with narrow terms.
 1. **Finalize and freeze search terms.** Review the Boolean strings in
    `fnd_meta_search.py` — especially the FND terminology additions
    documented in the Notion protocol page. This is the most likely thing
-   that could require prompt/criteria adjustments.
+   that could require prompt/criteria adjustments. Current open decision:
+   whether to replace the compact FND block with the expert-expanded block
+   covering functional/psychogenic motor phenomena, PNES/FDS/NEAD, vestibular
+   terms such as PPPD, and legacy terms. Do not add chronic fatigue / ME-CFS
+   terms unless the protocol scope is deliberately broadened beyond FND.
 2. **Run the production search** (`--full` with no date cutoff) for the
    actual meta-analysis once terms are frozen.
 3. **Set up remaining API keys** — NCBI (free), Scopus (institutional),
-   WoS (institutional). PsycINFO manual search via OVID.
+   WoS (institutional). PsycINFO manual search via OVID. If WoS API access is
+   unavailable or lacks abstracts, run WoS manually and merge the CSV export
+   with `scripts/merge_external_records.py` before deduplication/screening.
 
 ### Short-term (screening)
 

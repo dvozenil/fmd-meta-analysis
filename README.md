@@ -111,6 +111,29 @@ Each run creates a timestamped folder (`fnd_search_YYYYMMDD_HHMMSS/`) containing
 The generated raw screening outputs are not committed by default; the committed
 benchmark fixtures and summaries are documented in [data/README.md](data/README.md).
 
+### Merging manual exports
+
+If Web of Science API access is unavailable or does not return abstracts, run
+the saved WoS query manually in the Web of Science interface and export a CSV
+with as many bibliographic fields as possible: title, abstract, DOI, authors,
+journal/source title, publication year/date, keywords, accession number/UT, and
+URL. The same workflow can be used for PsycINFO or other manually searched
+databases.
+
+Merge manual exports into an existing API search run before screening:
+
+```bash
+python scripts/merge_external_records.py \
+  --search-dir fnd_search_YYYYMMDD_HHMMSS \
+  --external-csv wos=exports/web_of_science.csv \
+  --external-csv psycinfo=exports/psycinfo.csv
+```
+
+This writes `fnd_search_YYYYMMDD_HHMMSS/merged_external/` with normalized
+`raw_<database>.csv` files, `records_deduplicated.csv`,
+`records_deduplicated.ris`, and `merge_metadata.json`. Use the merged
+deduplicated files for Rayyan/ASReview/LLM screening.
+
 ## Methodology decisions
 
 Documented in the [Notion protocol page](https://app.notion.com/p/352cf8786b81816fb261cff71e17249f). Key choices:
