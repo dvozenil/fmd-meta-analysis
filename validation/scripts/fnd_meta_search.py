@@ -685,6 +685,11 @@ class EuropePMCClient:
             year = int(h.get("pubYear", "")) if h.get("pubYear") else None
         except ValueError:
             pass
+
+        # Volume/issue/ISSN are nested inside journalInfo
+        ji = h.get("journalInfo", {}) or {}
+        journal = ji.get("journal", {}) or {}
+
         return Record(
             source_db="europepmc",
             source_id=h.get("id", ""),
@@ -692,17 +697,17 @@ class EuropePMCClient:
             title=h.get("title", ""),
             abstract=h.get("abstractText", ""),
             authors=[a.strip() for a in (h.get("authorString") or "").split(",") if a.strip()],
-            journal=h.get("journalTitle", ""),
+            journal=journal.get("title", "") or h.get("journalTitle", "") or "",
             year=year,
             pub_date=h.get("firstPublicationDate", ""),
             keywords=h.get("keywordList", {}).get("keyword", []) if h.get("keywordList") else [],
             mesh_terms=[m.get("descriptorName", "") for m in
                         (h.get("meshHeadingList", {}) or {}).get("meshHeading", [])],
             pub_types=[p for p in (h.get("pubTypeList", {}) or {}).get("pubType", [])],
-            volume=h.get("journalVolume", "") or "",
-            issue=h.get("issue", "") or "",
+            volume=str(ji.get("volume", "") or ""),
+            issue=str(ji.get("issue", "") or ""),
             pages=h.get("pageInfo", "") or "",
-            issn=h.get("journalISSN", "") or "",
+            issn=journal.get("issn", "") or journal.get("essn", "") or "",
             url=f"https://europepmc.org/article/{h.get('source', 'MED')}/{h.get('id', '')}",
         )
 
