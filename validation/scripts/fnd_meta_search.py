@@ -540,6 +540,11 @@ class Record:
     mesh_terms: list[str] = field(default_factory=list)
     pub_types: list[str] = field(default_factory=list)
     url: str = ""
+    volume: str = ""
+    issue: str = ""
+    pages: str = ""
+    isbn: str = ""
+    issn: str = ""
     retrieved_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -628,6 +633,12 @@ class PubMedClient:
                 keywords=keywords,
                 mesh_terms=mesh,
                 pub_types=pub_types,
+                volume=art.findtext(".//Volume") or "",
+                issue=art.findtext(".//Issue") or "",
+                # MedlinePagination (e.g. "123-9") or individual page fields
+                pages=(art.findtext(".//MedlinePagination")
+                       or art.findtext(".//StartPage") or ""),
+                issn=art.findtext(".//ISSN") or "",
                 url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
             ))
         return out
@@ -688,6 +699,10 @@ class EuropePMCClient:
             mesh_terms=[m.get("descriptorName", "") for m in
                         (h.get("meshHeadingList", {}) or {}).get("meshHeading", [])],
             pub_types=[p for p in (h.get("pubTypeList", {}) or {}).get("pubType", [])],
+            volume=h.get("journalVolume", "") or "",
+            issue=h.get("issue", "") or "",
+            pages=h.get("pageInfo", "") or "",
+            issn=h.get("journalISSN", "") or "",
             url=f"https://europepmc.org/article/{h.get('source', 'MED')}/{h.get('id', '')}",
         )
 
@@ -768,15 +783,18 @@ class WebOfScienceClient:
 class ScopusClient:
     """Elsevier Scopus Search + Abstract Retrieval APIs.
 
-    Search uses STANDARD view (no abstracts). Abstracts are fetched in a
-    second pass via Abstract Retrieval API with META_ABS view, which
-    includes dc:description without requiring FULL-view entitlement.
+    Search tries COMPLETE view (full author list + metadata) first, falling
+    back to STANDARD view if the API key lacks COMPLETE entitlement.
+    Abstracts are fetched in a second pass via Abstract Retrieval API with
+    META_ABS view, which includes dc:description without requiring FULL-view
+    entitlement.
     """
 
     BASE = "https://api.elsevier.com/content/search/scopus"
     ABSTRACT_BASE = "https://api.elsevier.com/content/abstract"
     ABSTRACT_VIEWS = ("META_ABS", "META", "FULL")
     ABSTRACT_DELAY = 0.35  # seconds between abstract retrieval calls
+    SEARCH_VIEWS = ("COMPLETE", "STANDARD")  # preference order for search
 
     @retry()
     def search(self, query: str, count: int = 100) -> list[Record]:
@@ -785,13 +803,18 @@ class ScopusClient:
             return []
         log.info(f"Scopus query: {query[:200]}...")
         headers = {"X-ELS-APIKey": SCOPUS_API_KEY, "Accept": "application/json"}
+
+        # Probe which search view the API key is entitled to.
+        view = self._probe_search_view(headers)
+        log.info(f"Scopus Search: using view={view}")
+
         records: list[Record] = []
         start = 0
         page_size = min(count, 25)
         if page_size != count:
             log.info(f"Scopus page size reduced to {page_size} to match the service-level maximum")
         while True:
-            params = {"query": query, "count": page_size, "start": start, "view": "STANDARD"}
+            params = {"query": query, "count": page_size, "start": start, "view": view}
             r = requests.get(self.BASE, headers=headers, params=params, timeout=60)
             r.raise_for_status()
             data = r.json()
@@ -808,6 +831,37 @@ class ScopusClient:
             time.sleep(0.3)
 
         return records
+
+    def _probe_search_view(self, headers: dict) -> str:
+        """Return the best search view the API key is entitled to.
+
+        COMPLETE view includes the full author list (``author`` array with
+        ``authname``) and all bibliographic fields. STANDARD view includes
+        only ``dc:creator`` (first author) but still has volume/issue/pages.
+
+        Some institutional API keys lack COMPLETE entitlement, so we probe
+        with a minimal request and fall back gracefully.
+        """
+        for v in self.SEARCH_VIEWS:
+            try:
+                params = {"query": "all(test)", "count": 1, "view": v}
+                r = requests.get(self.BASE, headers=headers,
+                                 params=params, timeout=30)
+                if r.status_code == 200:
+                    entries = (r.json()
+                               .get("search-results", {})
+                               .get("entry", []))
+                    if not entries or entries[0].get("error"):
+                        # View returned no usable data, try next
+                        continue
+                    return v
+                # 400/403 typically means entitlement error
+                log.debug(f"  Scopus view={v} returned {r.status_code}")
+            except (requests.RequestException, ValueError):
+                continue
+        # Fall back to STANDARD — always available
+        log.warning("Scopus: could not probe views; defaulting to STANDARD")
+        return "STANDARD"
 
     def _enrich_abstracts(self, records: list[Record]) -> None:
         """Fetch abstracts via Abstract Retrieval API for records missing them."""
@@ -887,17 +941,40 @@ class ScopusClient:
                 year = int(cover_date[:4])
             except ValueError:
                 pass
+
+        # Authors: COMPLETE view returns an ``author`` array with authname;
+        # STANDARD view returns only ``dc:creator`` (first author string).
+        author_list = e.get("author", [])
+        if author_list:
+            authors = [a.get("authname", "") for a in author_list if a.get("authname")]
+        else:
+            dc_creator = e.get("dc:creator", "")
+            authors = [dc_creator] if dc_creator else []
+
+        # ISBN/ISSN: Scopus may return these as strings or lists
+        isbn = e.get("prism:isbn", "")
+        if isinstance(isbn, list):
+            isbn = "; ".join(x for x in isbn if x)
+        issn = e.get("prism:issn", "")
+        if isinstance(issn, list):
+            issn = "; ".join(x for x in issn if x)
+
         return Record(
             source_db="scopus",
             source_id=e.get("dc:identifier", "").replace("SCOPUS_ID:", ""),
             doi=e.get("prism:doi"),
             title=e.get("dc:title", ""),
             abstract=e.get("dc:description", ""),
-            authors=[a.get("authname", "") for a in e.get("author", []) or []],
+            authors=authors,
             journal=e.get("prism:publicationName", ""),
             year=year,
             pub_date=cover_date,
-            keywords=(e.get("authkeywords") or "").split("|"),
+            keywords=[kw.strip() for kw in (e.get("authkeywords") or "").split("|") if kw.strip()],
+            volume=e.get("prism:volume", ""),
+            issue=e.get("prism:issueIdentifier", ""),
+            pages=e.get("prism:pageRange", ""),
+            isbn=isbn,
+            issn=issn,
             url=next((l.get("@href", "") for l in e.get("link", [])
                       if l.get("@ref") == "scopus"), ""),
         )
@@ -1016,6 +1093,16 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
                 f.write(f"PY  - {r.year}\n")
             if r.journal:
                 f.write(f"JO  - {r.journal}\n")
+            if r.volume:
+                f.write(f"VL  - {r.volume}\n")
+            if r.issue:
+                f.write(f"IS  - {r.issue}\n")
+            if r.pages:
+                f.write(f"SP  - {r.pages}\n")
+            if r.isbn:
+                f.write(f"SN  - {r.isbn}\n")
+            elif r.issn:
+                f.write(f"SN  - {r.issn}\n")
             if r.abstract:
                 f.write(f"AB  - {r.abstract}\n")
             if r.doi:
