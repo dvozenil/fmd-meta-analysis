@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -44,16 +45,18 @@ SYSTEM_PROMPT = """You are screening titles and abstracts for a systematic revie
 Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
 
 Include candidate if the abstract plausibly describes:
-- Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
-- A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
-- Primary empirical research.
+- I1: Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
+- I2: A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
+- I3: Primary empirical research.
 
 Exclude if clearly:
-- Not FND/conversion/functional neurological symptoms.
-- Not neuroimaging of the brain.
-- Review/editorial/commentary/protocol only.
-- Animal-only, pediatric-only, or case report only.
-- Treatment/social/clinical paper with no neuroimaging data.
+- E1: Not FND/conversion/functional neurological symptoms.
+- E2: Not neuroimaging of the brain.
+- E3: Review/editorial/commentary/protocol only.
+- E4: Animal-only, pediatric-only, or case report only.
+- E5: Treatment/social/clinical paper with no neuroimaging data.
+
+For every response, populate inclusion_criteria_applied with the IDs (I1, I2, I3) of inclusion criteria the study appears to meet, and exclusion_criteria_applied with the IDs (E1–E5) of exclusion criteria that clearly apply. If none apply, use an empty array [].
 
 Coordinates are usually not visible in abstracts. Mark coordinate_present and coordinate_space as "unclear" unless the abstract explicitly says MNI/Talairach/coordinates/peak coordinates.
 
@@ -67,6 +70,8 @@ Return exactly one JSON object with this schema:
   "confidence": 0.0,
   "reason": "short rationale",
   "exclusion_reason": "wrong_population | wrong_modality | not_primary_research | pediatric_only | case_report | no_human_data | not_fnd | other | null",
+  "inclusion_criteria_applied": ["I1", "I2", "I3"],
+  "exclusion_criteria_applied": ["E1", "E2", "E3", "E4", "E5"],
   "modality_tags": ["fMRI | sMRI | VBM | PET | SPECT | DTI | resting_state | connectivity | EEG | other"],
   "population_tags": ["FND | PNES | functional_movement | functional_sensory | mixed | other"],
   "design_tags": ["case_control | within_subject | longitudinal | randomized_trial | review | case_report | protocol | other"],
@@ -152,10 +157,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return items
 
 
+_write_lock = threading.Lock()
+
+
 def append_jsonl(path: Path, item: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    with _write_lock:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
 def completed_record_ids(path: Path) -> set[str]:
@@ -213,6 +222,15 @@ def normalize_and_validate_decision(decision: dict[str, Any]) -> tuple[dict[str,
             normalized_tags.append(VALUE_NORMALIZATIONS.get((key, tag), tag))
         decision[key] = normalized_tags
 
+    for key in ("inclusion_criteria_applied", "exclusion_criteria_applied"):
+        val = decision.get(key)
+        if not isinstance(val, list):
+            decision[key] = []
+            if val is not None:
+                warnings.append(f"{key} was not a list, reset to []")
+        else:
+            decision[key] = [v for v in val if isinstance(v, str)]
+
     if decision.get("decision") in {"include_candidate", "unclear"}:
         if decision.get("needs_human_review") is not True:
             decision["needs_human_review"] = True
@@ -268,7 +286,7 @@ def call_model(
     thinking: bool | None = None,
     system_prompt: str | None = None,
 ) -> dict[str, Any]:
-    """Call the model for one record.
+    """Call the model once for one record.
 
     ``thinking`` controls ``chat_template_kwargs``:
       - None  → omit the key entirely (server default)
@@ -352,9 +370,111 @@ def call_model(
     }
 
 
+def _decision_order(decision: str) -> int:
+    """Ordinal for sorting: include_candidate > exclude > unclear."""
+    order = {"include_candidate": 2, "unclear": 1, "exclude": 0}
+    return order.get(decision, -1)
+
+
+def call_model_with_reps(
+    record: dict[str, Any],
+    base_url: str,
+    api_key: str,
+    model: str,
+    temperature: float,
+    timeout: int,
+    max_retries: int,
+    use_response_format: bool,
+    reps: int,
+    thinking: bool | None = None,
+    system_prompt: str | None = None,
+) -> dict[str, Any]:
+    """Call the model ``reps`` times for one record and return consensus.
+
+    Each repetition is an independent call. Results are aggregated into a
+    consensus decision using majority vote on the three-way decision
+    (include_candidate / exclude / unclear).  When there is a tie the
+    most-inclusive option wins (include_candidate > unclear > exclude).
+
+    Returns the same shape as ``call_model``, extended with:
+
+    - ``consensus_decision``: the aggregated decision
+    - ``consensus_confidence``: fraction of reps that voted for the consensus
+    - ``consensus_counts``: ``{decision: count}`` across all reps
+    - ``individual_runs``: list of the per-rep result dicts
+    - ``failed_runs``: count of reps that returned an error
+    """
+    individual_runs: list[dict[str, Any]] = []
+    for rep in range(1, reps + 1):
+        result = call_model(
+            record,
+            base_url,
+            api_key,
+            model,
+            temperature,
+            timeout,
+            max_retries,
+            use_response_format,
+            thinking,
+            system_prompt,
+        )
+        result["_rep"] = rep
+        individual_runs.append(result)
+
+    # Count decisions from successful runs
+    from collections import Counter
+    dec_counter: Counter[str] = Counter()
+    successes = [r for r in individual_runs if r.get("llm_decision") is not None]
+    failures = len(individual_runs) - len(successes)
+
+    for r in successes:
+        dec_counter[r["llm_decision"]["decision"]] += 1
+
+    if not successes:
+        # All runs failed — pick the last result as the error carrier
+        last = individual_runs[-1]
+        return {
+            "record_id": record["record_id"],
+            "source": last["source"],
+            "input_record": record,
+            "llm_decision": None,
+            "error": last.get("error", "all repetitions failed"),
+            "consensus_decision": None,
+            "consensus_confidence": 0.0,
+            "consensus_counts": {},
+            "individual_runs": individual_runs,
+            "failed_runs": failures,
+        }
+
+    # Majority vote; break ties toward inclusivity
+    sorted_decs = sorted(dec_counter.keys(), key=_decision_order, reverse=True)
+    consensus = max(sorted_decs, key=lambda d: dec_counter[d])
+    confidence = dec_counter[consensus] / reps
+
+    # Use the first run that matched the consensus as the primary decision
+    primary = next(
+        (r for r in successes if r["llm_decision"]["decision"] == consensus),
+        successes[0],
+    )
+
+    return {
+        "record_id": record["record_id"],
+        "source": primary["source"],
+        "input_record": record,
+        "llm_decision": primary["llm_decision"],
+        "schema_warnings": primary.get("schema_warnings", []),
+        "raw_response": primary.get("raw_response"),
+        "consensus_decision": consensus,
+        "consensus_confidence": confidence,
+        "consensus_counts": dict(dec_counter),
+        "individual_runs": individual_runs,
+        "failed_runs": failures,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=Path, default=Path("data/test_abstracts_20.jsonl"))
+    parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("data/llm_screening_results.jsonl"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -382,6 +502,16 @@ def main() -> None:
         default=None,
         help="Pass chat_template_kwargs thinking=false/enable_thinking=false (force reasoning off).",
     )
+    parser.add_argument(
+        "--reps",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Repeat each screening N times, take majority-vote consensus "
+        "(default: 1, no repeats). 3 recommended for production screening. "
+        "See Vembye et al. (2025, Psychological Methods) for validation of "
+        "repeated-questioning protocols for LLM title/abstract screening.",
+    )
     args = parser.parse_args()
 
     if args.thinking:
@@ -408,13 +538,18 @@ def main() -> None:
     todo = [r for r in records if r.get("record_id") not in done]
 
     print(f"Loaded {len(records)} records; {len(done)} already completed; {len(todo)} to screen.")
+    if args.reps > 1:
+        print(f"Repeated screening: {args.reps} queries per abstract, majority-vote consensus.")
     if not todo:
         return
+
+    _call_fn = call_model if args.reps <= 1 else call_model_with_reps
+    _extra = {} if args.reps <= 1 else {"reps": args.reps}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [
             executor.submit(
-                call_model,
+                _call_fn,
                 record,
                 base_url,
                 api_key,
@@ -425,13 +560,21 @@ def main() -> None:
                 not args.no_response_format,
                 thinking,
                 loaded_prompt,
+                **_extra,
             )
             for record in todo
         ]
         for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             result = future.result()
             append_jsonl(args.output, result)
-            status = "ok" if result.get("llm_decision") else "error"
+            if args.reps > 1:
+                c = result.get("consensus_counts", {})
+                conf = result.get("consensus_confidence", 0.0)
+                status = f"consensus={result.get('consensus_decision')} "
+                status += f"({c.get('include_candidate', 0)}i/{c.get('unclear', 0)}u/{c.get('exclude', 0)}e) "
+                status += f"conf={conf:.0%}"
+            else:
+                status = "ok" if result.get("llm_decision") else "error"
             print(f"[{i}/{len(todo)}] {status}: {result['record_id']}")
 
 

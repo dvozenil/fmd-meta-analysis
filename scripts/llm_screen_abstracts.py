@@ -286,7 +286,7 @@ def call_model(
     thinking: bool | None = None,
     system_prompt: str | None = None,
 ) -> dict[str, Any]:
-    """Call the model for one record.
+    """Call the model once for one record.
 
     ``thinking`` controls ``chat_template_kwargs``:
       - None  → omit the key entirely (server default)
@@ -370,6 +370,108 @@ def call_model(
     }
 
 
+def _decision_order(decision: str) -> int:
+    """Ordinal for sorting: include_candidate > exclude > unclear."""
+    order = {"include_candidate": 2, "unclear": 1, "exclude": 0}
+    return order.get(decision, -1)
+
+
+def call_model_with_reps(
+    record: dict[str, Any],
+    base_url: str,
+    api_key: str,
+    model: str,
+    temperature: float,
+    timeout: int,
+    max_retries: int,
+    use_response_format: bool,
+    reps: int,
+    thinking: bool | None = None,
+    system_prompt: str | None = None,
+) -> dict[str, Any]:
+    """Call the model ``reps`` times for one record and return consensus.
+
+    Each repetition is an independent call. Results are aggregated into a
+    consensus decision using majority vote on the three-way decision
+    (include_candidate / exclude / unclear).  When there is a tie the
+    most-inclusive option wins (include_candidate > unclear > exclude).
+
+    Returns the same shape as ``call_model``, extended with:
+
+    - ``consensus_decision``: the aggregated decision
+    - ``consensus_confidence``: fraction of reps that voted for the consensus
+    - ``consensus_counts``: ``{decision: count}`` across all reps
+    - ``individual_runs``: list of the per-rep result dicts
+    - ``failed_runs``: count of reps that returned an error
+    """
+    individual_runs: list[dict[str, Any]] = []
+    for rep in range(1, reps + 1):
+        result = call_model(
+            record,
+            base_url,
+            api_key,
+            model,
+            temperature,
+            timeout,
+            max_retries,
+            use_response_format,
+            thinking,
+            system_prompt,
+        )
+        result["_rep"] = rep
+        individual_runs.append(result)
+
+    # Count decisions from successful runs
+    from collections import Counter
+    dec_counter: Counter[str] = Counter()
+    successes = [r for r in individual_runs if r.get("llm_decision") is not None]
+    failures = len(individual_runs) - len(successes)
+
+    for r in successes:
+        dec_counter[r["llm_decision"]["decision"]] += 1
+
+    if not successes:
+        # All runs failed — pick the last result as the error carrier
+        last = individual_runs[-1]
+        return {
+            "record_id": record["record_id"],
+            "source": last["source"],
+            "input_record": record,
+            "llm_decision": None,
+            "error": last.get("error", "all repetitions failed"),
+            "consensus_decision": None,
+            "consensus_confidence": 0.0,
+            "consensus_counts": {},
+            "individual_runs": individual_runs,
+            "failed_runs": failures,
+        }
+
+    # Majority vote; break ties toward inclusivity
+    sorted_decs = sorted(dec_counter.keys(), key=_decision_order, reverse=True)
+    consensus = max(sorted_decs, key=lambda d: dec_counter[d])
+    confidence = dec_counter[consensus] / reps
+
+    # Use the first run that matched the consensus as the primary decision
+    primary = next(
+        (r for r in successes if r["llm_decision"]["decision"] == consensus),
+        successes[0],
+    )
+
+    return {
+        "record_id": record["record_id"],
+        "source": primary["source"],
+        "input_record": record,
+        "llm_decision": primary["llm_decision"],
+        "schema_warnings": primary.get("schema_warnings", []),
+        "raw_response": primary.get("raw_response"),
+        "consensus_decision": consensus,
+        "consensus_confidence": confidence,
+        "consensus_counts": dict(dec_counter),
+        "individual_runs": individual_runs,
+        "failed_runs": failures,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
@@ -400,6 +502,16 @@ def main() -> None:
         default=None,
         help="Pass chat_template_kwargs thinking=false/enable_thinking=false (force reasoning off).",
     )
+    parser.add_argument(
+        "--reps",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Repeat each screening N times, take majority-vote consensus "
+        "(default: 1, no repeats). 3 recommended for production screening. "
+        "See Vembye et al. (2025, Psychological Methods) for validation of "
+        "repeated-questioning protocols for LLM title/abstract screening.",
+    )
     args = parser.parse_args()
 
     if args.thinking:
@@ -426,13 +538,18 @@ def main() -> None:
     todo = [r for r in records if r.get("record_id") not in done]
 
     print(f"Loaded {len(records)} records; {len(done)} already completed; {len(todo)} to screen.")
+    if args.reps > 1:
+        print(f"Repeated screening: {args.reps} queries per abstract, majority-vote consensus.")
     if not todo:
         return
+
+    _call_fn = call_model if args.reps <= 1 else call_model_with_reps
+    _extra = {} if args.reps <= 1 else {"reps": args.reps}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [
             executor.submit(
-                call_model,
+                _call_fn,
                 record,
                 base_url,
                 api_key,
@@ -443,13 +560,21 @@ def main() -> None:
                 not args.no_response_format,
                 thinking,
                 loaded_prompt,
+                **_extra,
             )
             for record in todo
         ]
         for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             result = future.result()
             append_jsonl(args.output, result)
-            status = "ok" if result.get("llm_decision") else "error"
+            if args.reps > 1:
+                c = result.get("consensus_counts", {})
+                conf = result.get("consensus_confidence", 0.0)
+                status = f"consensus={result.get('consensus_decision')} "
+                status += f"({c.get('include_candidate', 0)}i/{c.get('unclear', 0)}u/{c.get('exclude', 0)}e) "
+                status += f"conf={conf:.0%}"
+            else:
+                status = "ok" if result.get("llm_decision") else "error"
             print(f"[{i}/{len(todo)}] {status}: {result['record_id']}")
 
 
