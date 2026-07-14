@@ -883,19 +883,29 @@ class ScopusClient:
 
         fetched = 0
         failed = 0
+        authors_filled = 0
         for i, rec in enumerate(need, 1):
-            abstract = self._fetch_one_abstract(rec.doi, rec.source_id, view)
+            abstract, authors = self._fetch_abstract_and_authors(
+                rec.doi, rec.source_id, view)
             if abstract:
                 rec.abstract = abstract
                 fetched += 1
             else:
                 failed += 1
+            # The Search API (STANDARD view) only gives dc:creator (first
+            # author); replace it with the full list from Abstract Retrieval
+            # whenever one is returned.
+            if authors:
+                rec.authors = authors
+                authors_filled += 1
             if i % 50 == 0:
                 log.info(f"  Abstract retrieval progress: {i}/{len(need)} "
-                         f"(fetched={fetched}, failed={failed})")
+                         f"(abstracts={fetched}, authors={authors_filled}, "
+                         f"failed={failed})")
             time.sleep(self.ABSTRACT_DELAY)
 
-        log.info(f"Scopus Abstract Retrieval done: {fetched} abstracts fetched, "
+        log.info(f"Scopus Abstract Retrieval done: {fetched} abstracts, "
+                 f"{authors_filled} full author lists, "
                  f"{failed} unavailable out of {len(need)} attempted")
 
     def _probe_abstract_view(self) -> str | None:
@@ -914,28 +924,77 @@ class ScopusClient:
             time.sleep(0.3)
         return None
 
-    def _fetch_one_abstract(self, doi: str | None, scopus_id: str | None,
-                            view: str) -> str:
-        """Retrieve abstract text for a single document."""
+    def _fetch_abstract_and_authors(self, doi: str | None, scopus_id: str | None,
+                                    view: str) -> tuple[str, list[str]]:
+        """Retrieve abstract text and the full author list for one document.
+
+        The Scopus Search API (STANDARD view) returns only ``dc:creator``
+        (first author). The full author list lives in the Abstract Retrieval
+        response under ``abstracts-retrieval-response.authors.author``, so we
+        harvest both abstract and authors from the same call used for
+        abstract enrichment (no extra requests).
+        """
         headers = {"X-ELS-APIKey": SCOPUS_API_KEY, "Accept": "application/json"}
         if doi:
             url = f"{self.ABSTRACT_BASE}/doi/{doi}"
         elif scopus_id:
             url = f"{self.ABSTRACT_BASE}/scopus_id/{scopus_id}"
         else:
-            return ""
+            return "", []
         try:
             r = requests.get(url, headers=headers, params={"view": view}, timeout=30)
             if r.status_code != 200:
-                return ""
-            data = r.json()
-            coredata = data.get("abstracts-retrieval-response", {}).get("coredata", {})
+                return "", []
+            resp = r.json().get("abstracts-retrieval-response", {})
+            coredata = resp.get("coredata", {})
             abstract = coredata.get("dc:description", "")
             if isinstance(abstract, dict):
                 abstract = abstract.get("$", "")
-            return abstract.strip()
+            authors = self._parse_abstract_authors(resp.get("authors"))
+            return abstract.strip(), authors
         except (requests.RequestException, ValueError, KeyError):
-            return ""
+            return "", []
+
+    @staticmethod
+    def _parse_abstract_authors(authors_node: Any) -> list[str]:
+        """Extract author display names from an Abstract Retrieval ``authors`` node.
+
+        The node shape is view/version dependent but typically::
+
+            {"author": [{"@auid": "...", "preferred-name": {
+                "ce:indexed-name": "Smith J.",
+                "ce:surname": "Smith", "ce:given-name": "John",
+                "ce:initials": "J."}}, ...]}
+
+        Older responses may put ``ce:surname``/``authname`` directly on the
+        author object. We prefer ``ce:indexed-name`` (Scopus's canonical
+        "Surname I." form, matching ``dc:creator``) and fall back to building
+        the name from surname + given name.
+        """
+        if not authors_node:
+            return []
+        alist = authors_node.get("author", []) if isinstance(authors_node, dict) else []
+        # Single-author responses occasionally use a dict instead of a list.
+        if isinstance(alist, dict):
+            alist = [alist]
+        names: list[str] = []
+        for a in alist:
+            if not isinstance(a, dict):
+                continue
+            pref = a.get("preferred-name") or {}
+            name = (a.get("ce:indexed-name")
+                    or pref.get("ce:indexed-name")
+                    or a.get("authname"))
+            if not name:
+                surname = pref.get("ce:surname") or a.get("ce:surname")
+                given = (pref.get("ce:given-name")
+                         or pref.get("ce:initials")
+                         or a.get("ce:given-name"))
+                if surname:
+                    name = f"{surname} {given}".strip() if given else surname
+            if name:
+                names.append(str(name).strip())
+        return names
 
     @staticmethod
     def _parse(e: dict[str, Any]) -> Record:

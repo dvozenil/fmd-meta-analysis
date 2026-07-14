@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 # Allow running from repo root without installation
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fnd_meta_search import ScopusClient, Record
 
@@ -148,12 +148,87 @@ def test_isbn_list_handling():
     print(f"✓ ISBN list handling: {rec.isbn}")
 
 
+def test_isbn_list_of_dicts():
+    """ISBN/ISSN may be returned as a list of {"$": value} dicts.
+
+    Regression test: Scopus (XML→JSON) sometimes wraps prism:isbn items in
+    dicts, which previously crashed '; '.join() with
+    'TypeError: expected str instance, dict found'.
+    """
+    entry = dict(COMPLETE_ENTRY)
+    entry["prism:isbn"] = [{"$": "978-3-16-148410-0"}, {"$": "978-3-16-148411-7"}]
+    entry["prism:issn"] = [{"$": "1525-5050"}]
+    rec = ScopusClient._parse(entry)
+    assert rec.isbn == "978-3-16-148410-0; 978-3-16-148411-7", f"Got {rec.isbn}"
+    assert rec.issn == "1525-5050", f"Got {rec.issn}"
+    print(f"✓ ISBN/ISSN list-of-dicts: isbn={rec.isbn!r} issn={rec.issn!r}")
+
+
 def test_record_has_new_fields():
     """Record dataclass should have volume, issue, pages, isbn, issn fields."""
     fields = Record.__dataclass_fields__
     for field_name in ("volume", "issue", "pages", "isbn", "issn"):
         assert field_name in fields, f"Missing field: {field_name}"
     print("✓ Record dataclass has all new fields: volume, issue, pages, isbn, issn")
+
+
+# ---------------------------------------------------------------------------
+# Abstract Retrieval author parsing (full author list)
+# ---------------------------------------------------------------------------
+ABSTRACT_AUTHORS_NODE = {
+    "author": [
+        {"@auid": "56482983700",
+         # Top-level indexed-name carries ALL initials (Scopus's canonical
+         # form, matching dc:creator); preferred-name truncates to one.
+         "ce:indexed-name": "Johnstone B.C.",
+         "ce:surname": "Johnstone", "ce:initials": "B.C.",
+         "preferred-name": {"ce:indexed-name": "Johnstone B.",
+                             "ce:surname": "Johnstone",
+                             "ce:given-name": "Brett C"}},
+        {"@auid": "7202784561",
+         "ce:indexed-name": "Jones A.D.",
+         "ce:surname": "Jones", "ce:initials": "A.D.",
+         "preferred-name": {"ce:indexed-name": "Jones A.",
+                             "ce:surname": "Jones",
+                             "ce:given-name": "Alice D"}},
+    ]
+}
+
+
+def test_parse_abstract_authors_full():
+    """Abstract Retrieval authors node should yield full canonical name list.
+
+    The top-level ``ce:indexed-name`` (all initials) is preferred over the
+    truncated ``preferred-name.ce:indexed-name``, for consistency with the
+    first-author string produced from ``dc:creator``.
+    """
+    names = ScopusClient._parse_abstract_authors(ABSTRACT_AUTHORS_NODE)
+    assert names == ["Johnstone B.C.", "Jones A.D."], f"Got {names}"
+    print(f"✓ Abstract authors (full list): {names}")
+
+
+def test_parse_abstract_authors_fallback_surname():
+    """Authors missing ce:indexed-name should be built from surname + given."""
+    node = {"author": [{"preferred-name": {"ce:surname": "Garcia", "ce:given-name": "Maria"}}]}
+    names = ScopusClient._parse_abstract_authors(node)
+    assert names == ["Garcia Maria"], f"Got {names}"
+    print(f"✓ Abstract authors (surname fallback): {names}")
+
+
+def test_parse_abstract_authors_single_dict():
+    """A lone author returned as a dict (not a list) should still parse."""
+    node = {"author": {"preferred-name": {"ce:indexed-name": "Solo A."}}}
+    names = ScopusClient._parse_abstract_authors(node)
+    assert names == ["Solo A."], f"Got {names}"
+    print(f"✓ Abstract authors (single-dict): {names}")
+
+
+def test_parse_abstract_authors_empty():
+    """Missing/empty authors node should return [] without crashing."""
+    assert ScopusClient._parse_abstract_authors(None) == []
+    assert ScopusClient._parse_abstract_authors({}) == []
+    assert ScopusClient._parse_abstract_authors({"author": []}) == []
+    print("✓ Abstract authors (empty): []")
 
 
 if __name__ == "__main__":
@@ -165,5 +240,10 @@ if __name__ == "__main__":
     test_keywords_parsed()
     test_url_extraction()
     test_isbn_list_handling()
+    test_isbn_list_of_dicts()
     test_record_has_new_fields()
+    test_parse_abstract_authors_full()
+    test_parse_abstract_authors_fallback_surname()
+    test_parse_abstract_authors_single_dict()
+    test_parse_abstract_authors_empty()
     print("\n=== All tests passed! ===")
