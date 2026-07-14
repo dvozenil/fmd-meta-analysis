@@ -1377,6 +1377,19 @@ def main() -> None:
         else:
             log.info("Skipping Scopus abstract enrichment (re-run with --auto to skip this prompt)")
 
+    # -- Scopus pre-dedup enrichment (ASySD) -------------------------------
+    # ASySD dedup uses author + abstract similarity, but the Scopus Search API
+    # (STANDARD view) returns only the first author (dc:creator) and no
+    # abstract. Enrich ALL Scopus records (abstracts + full author lists) BEFORE
+    # deduplication so the matcher sees real data. This is one call per Scopus
+    # record (~192); simple dedup skips this and enriches post-dedup instead.
+    if DEDUP_METHOD == "asysd" and (scopus_abstracts_fetched or AUTO_MODE):
+        scopus_all = [r for r in all_records if r.source_db == "scopus"]
+        if scopus_all:
+            log.info(f"Enriching {len(scopus_all)} Scopus records (abstracts + "
+                     f"authors) before ASySD dedup")
+            ScopusClient()._enrich_abstracts(scopus_all)
+
     # -- Deduplication ------------------------------------------------------
     log.info(f"Total raw records across all DBs: {len(all_records)}")
     log.info(f"Deduplication method: {DEDUP_METHOD}")
@@ -1396,10 +1409,10 @@ def main() -> None:
                 "journal": r.journal,
                 "abstract": r.abstract,
                 "doi": r.doi,
-                "pages": None,
-                "volume": None,
-                "number": None,
-                "isbn": None,
+                "pages": r.pages or None,
+                "volume": r.volume or None,
+                "number": r.issue or None,
+                "isbn": r.isbn or None,
                 "label": r.source_db,
             })
         asysd_unique, asysd_stats, maybe_pairs_data = deduplicate_asysd(
