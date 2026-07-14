@@ -1378,17 +1378,23 @@ def main() -> None:
             log.info("Skipping Scopus abstract enrichment (re-run with --auto to skip this prompt)")
 
     # -- Scopus pre-dedup enrichment (ASySD) -------------------------------
-    # ASySD dedup uses author + abstract similarity, but the Scopus Search API
-    # (STANDARD view) returns only the first author (dc:creator) and no
-    # abstract. Enrich ALL Scopus records (abstracts + full author lists) BEFORE
-    # deduplication so the matcher sees real data. This is one call per Scopus
-    # record (~192); simple dedup skips this and enriches post-dedup instead.
+    # ASySD dedup uses author + abstract similarity. Under STANDARD view the
+    # Search API returns only dc:creator (first author) and no abstract, so we
+    # must enrich ALL Scopus records (abstracts + full author lists) BEFORE
+    # deduplication. Under COMPLETE view the Search API already returns the
+    # full author array and abstract inline, so _enrich_abstracts is a near
+    # no-op (only fetches records still missing an abstract). Either way the
+    # matcher sees real data. Simple dedup skips this and enriches post-dedup.
+    pre_dedup_enriched = False
     if DEDUP_METHOD == "asysd" and (scopus_abstracts_fetched or AUTO_MODE):
         scopus_all = [r for r in all_records if r.source_db == "scopus"]
         if scopus_all:
-            log.info(f"Enriching {len(scopus_all)} Scopus records (abstracts + "
-                     f"authors) before ASySD dedup")
+            need = [r for r in scopus_all if not r.abstract]
+            log.info(f"Enriching Scopus records before ASySD dedup: "
+                     f"{len(need)}/{len(scopus_all)} missing abstracts "
+                     f"(full author lists harvested from the same calls)")
             ScopusClient()._enrich_abstracts(scopus_all)
+            pre_dedup_enriched = True
 
     # -- Deduplication ------------------------------------------------------
     log.info(f"Total raw records across all DBs: {len(all_records)}")
@@ -1465,7 +1471,9 @@ def main() -> None:
 
     # Fetch abstracts only for deduplicated Scopus-sourced records missing them.
     # PubMed/Europe PMC already include abstracts; duplicates have been removed.
-    if AUTO_MODE or scopus_abstracts_fetched:
+    # Skip when we already enriched pre-dedup (ASySD path) — those records are
+    # the same objects, already enriched, so this would just re-fetch failures.
+    if not pre_dedup_enriched and (AUTO_MODE or scopus_abstracts_fetched):
         scopus_need_abstract = [r for r in deduped
                                 if r.source_db == "scopus" and not r.abstract]
         if scopus_need_abstract:
