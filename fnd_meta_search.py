@@ -59,6 +59,11 @@ except ImportError:
 if load_dotenv:
     load_dotenv(Path(__file__).with_name(".env"))
 
+try:
+    from dedup_asysd import deduplicate_asysd
+except ImportError:
+    deduplicate_asysd = None
+
 # ---------------------------------------------------------------------------
 # CLI ARGUMENT PARSING
 # ---------------------------------------------------------------------------
@@ -82,10 +87,16 @@ def _parse_args() -> argparse.Namespace:
         "--auto", action="store_true",
         help="Run all steps without interactive confirmation prompts",
     )
+    parser.add_argument(
+        "--dedup", choices=["asysd", "simple"], default="asysd",
+        help="Deduplication algorithm: 'asysd' (ASySD-class, default) or "
+             "'simple' (old DOI+title hash dedup)",
+    )
     return parser.parse_args()
 
 _cli_args = _parse_args()
 AUTO_MODE = _cli_args.auto
+DEDUP_METHOD = _cli_args.dedup
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -1071,7 +1082,7 @@ def _titles_similar(title_a: str, title_b: str, threshold: float = 0.4) -> bool:
     return len(w1 & w2) / len(w1 | w2) >= threshold
 
 
-def deduplicate(records: list[Record]) -> tuple[list[Record], dict[str, int]]:
+def deduplicate_simple(records: list[Record]) -> tuple[list[Record], dict[str, int]]:
     """Dedup by DOI when available, else by normalized title+year hash.
 
     When two records share a DOI but have substantially different titles,
@@ -1366,16 +1377,103 @@ def main() -> None:
         else:
             log.info("Skipping Scopus abstract enrichment (re-run with --auto to skip this prompt)")
 
+    # -- Scopus pre-dedup enrichment (ASySD) -------------------------------
+    # ASySD dedup uses author + abstract similarity. Under STANDARD view the
+    # Search API returns only dc:creator (first author) and no abstract, so we
+    # must enrich ALL Scopus records (abstracts + full author lists) BEFORE
+    # deduplication. Under COMPLETE view the Search API already returns the
+    # full author array and abstract inline, so _enrich_abstracts is a near
+    # no-op (only fetches records still missing an abstract). Either way the
+    # matcher sees real data. Simple dedup skips this and enriches post-dedup.
+    pre_dedup_enriched = False
+    if DEDUP_METHOD == "asysd" and (scopus_abstracts_fetched or AUTO_MODE):
+        scopus_all = [r for r in all_records if r.source_db == "scopus"]
+        if scopus_all:
+            need = [r for r in scopus_all if not r.abstract]
+            log.info(f"Enriching Scopus records before ASySD dedup: "
+                     f"{len(need)}/{len(scopus_all)} missing abstracts "
+                     f"(full author lists harvested from the same calls)")
+            ScopusClient()._enrich_abstracts(scopus_all)
+            pre_dedup_enriched = True
+
     # -- Deduplication ------------------------------------------------------
     log.info(f"Total raw records across all DBs: {len(all_records)}")
-    deduped, dedup_stats = deduplicate(all_records)
+    log.info(f"Deduplication method: {DEDUP_METHOD}")
+
+    maybe_pairs_data = []
+
+    if DEDUP_METHOD == "asysd" and deduplicate_asysd is not None:
+        # Convert Records to dicts for ASySD
+        asysd_input = []
+        for r in all_records:
+            asysd_input.append({
+                "source": r.source_db,
+                "record_id": r.source_id,
+                "author": "; ".join(r.authors) if r.authors else None,
+                "title": r.title,
+                "year": str(r.year) if r.year else None,
+                "journal": r.journal,
+                "abstract": r.abstract,
+                "doi": r.doi,
+                "pages": r.pages or None,
+                "volume": r.volume or None,
+                "number": r.issue or None,
+                "isbn": r.isbn or None,
+                "label": r.source_db,
+            })
+        asysd_unique, asysd_stats, maybe_pairs_data = deduplicate_asysd(
+            asysd_input, keep_source="pubmed"
+        )
+
+        # Convert back: map unique record_ids back to Record objects
+        # Build index of all records by source_id
+        record_by_id: dict[str, Record] = {}
+        for r in all_records:
+            record_by_id[r.source_id] = r
+
+        deduped = []
+        for rec_dict in asysd_unique:
+            rid = rec_dict.get("record_id", "")
+            if rid in record_by_id:
+                deduped.append(record_by_id[rid])
+            else:
+                # Fallback: search by duplicate_id
+                dup_id = rec_dict.get("duplicate_id", "")
+                if dup_id in record_by_id:
+                    deduped.append(record_by_id[dup_id])
+
+        dedup_stats = {
+            "total_raw": asysd_stats["total_raw"],
+            "unique": len(deduped),
+            "duplicates_removed": asysd_stats["duplicates_removed"],
+            "method": "asysd",
+        }
+
+        # Export maybe_pairs to CSV
+        if maybe_pairs_data:
+            maybe_path = OUTPUT_DIR / "maybe_pairs.csv"
+            with open(maybe_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(maybe_pairs_data[0].keys()))
+                w.writeheader()
+                for row in maybe_pairs_data:
+                    w.writerow(row)
+            log.info(f"Wrote {len(maybe_pairs_data)} maybe-pairs -> {maybe_path}")
+
+    else:
+        if DEDUP_METHOD == "asysd" and deduplicate_asysd is None:
+            log.warning("ASySD dedup not available (dedup_asysd module not found), "
+                        "falling back to simple dedup")
+        deduped, dedup_stats = deduplicate_simple(all_records)
+        dedup_stats["method"] = "simple"
+
     log.info(f"After dedup: {len(deduped)} unique records "
-             f"({dedup_stats['duplicates_removed']} duplicates removed, "
-             f"{dedup_stats['doi_collisions_rescued']} DOI collisions rescued)")
+             f"({dedup_stats['duplicates_removed']} duplicates removed)")
 
     # Fetch abstracts only for deduplicated Scopus-sourced records missing them.
     # PubMed/Europe PMC already include abstracts; duplicates have been removed.
-    if AUTO_MODE or scopus_abstracts_fetched:
+    # Skip when we already enriched pre-dedup (ASySD path) — those records are
+    # the same objects, already enriched, so this would just re-fetch failures.
+    if not pre_dedup_enriched and (AUTO_MODE or scopus_abstracts_fetched):
         scopus_need_abstract = [r for r in deduped
                                 if r.source_db == "scopus" and not r.abstract]
         if scopus_need_abstract:
@@ -1390,6 +1488,8 @@ def main() -> None:
     for db, n in per_db.items():
         log.info(f"  Records identified from {db}: {n}")
     log.info(f"  Records after duplicates removed: {dedup_stats['unique']}")
+    if dedup_stats.get("method") == "simple" and "doi_collisions_rescued" in dedup_stats:
+        log.info(f"  DOI collisions rescued: {dedup_stats['doi_collisions_rescued']}")
     log.info("=" * 60)
     log.info("Next step: import records_deduplicated.ris into Rayyan or ASReview")
     log.info("for title/abstract screening.")
