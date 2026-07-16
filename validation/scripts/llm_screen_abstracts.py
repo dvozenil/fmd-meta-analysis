@@ -371,7 +371,7 @@ def call_model(
 
 
 def _decision_order(decision: str) -> int:
-    """Ordinal for sorting: include_candidate > exclude > unclear."""
+    """Ordinal for sorting: include_candidate > unclear > exclude."""
     order = {"include_candidate": 2, "unclear": 1, "exclude": 0}
     return order.get(decision, -1)
 
