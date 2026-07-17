@@ -1,6 +1,6 @@
 # Repo State and Next Steps
 
-Last updated: 2026-06-10
+Last updated: 2026-07-03
 
 ## Current status: LLM screening validated (dual benchmark)
 
@@ -123,6 +123,26 @@ Mavroudis 2024 had 8 VBM studies with narrow terms.
    LLM4SCREENLIT recommendations. Target: Research Synthesis Methods or
    Systematic Reviews.
 
+### Post-publication: Neurosynth Compose hosting
+
+8. **Export curated StudySet to Neurosynth Compose.** Since we're
+   already using NiMARE (which speaks NiMADS natively), exporting the
+   final StudySet + annotations for public hosting on NS-Compose is
+   essentially one function call. This gives us a citable, reproducible
+   artifact with full provenance — and positions the work for community
+   reuse without committing to a formal Living Systematic Review.
+
+   **Action needed during extraction:** Structure the extraction
+   spreadsheet with NiMADS-compatible columns (include, track,
+   fnd_subtype, contrast_direction, comparison_type) so the export is
+   straightforward. See
+   [`docs/neurosynth-compose-integration.md`](neurosynth-compose-integration.md)
+   for the full plan, NiMADS schema reference, and upload process.
+
+   **Not committing to:** LSR registration on PROSPERO (field too
+   slow-moving), NS-Compose as primary analysis platform (we run NiMARE
+   locally), or replacing our search pipeline.
+
 ## Validation archive
 
 All validation data, scripts, prompts, search runs, and LLM outputs are
@@ -133,3 +153,42 @@ The git tag `v0.1-validation-complete` marks the exact repo state when
 validation was finalized. When production work begins, validation modes
 may be removed from the main scripts; the `validation/` folder retains
 frozen copies of everything needed to re-run independently.
+
+### Housekeeping note
+
+The validation archive is in an awkward middle ground: it was built as an
+LLM screening proof-of-concept, but the frozen scripts have since received
+parser bug fixes (Scopus authors, EuropePMC volume/issue, ISBN/ISSN dict
+crash) that make them diverge from the tagged v0.1 state. The validation
+results (40/40 sensitivity) are unaffacted — the fixes only affect fields
+not used in validation matching — but the tag is now slightly misleading.
+
+This is low priority, but when the validation approach is eventually
+replaced (e.g. with proper ASReview dual-screening), the `validation/`
+directory can be removed from `main`. The tag preserves everything in git
+history permanently.
+
+## Scopus abstract enrichment: dead weight assessment (2026-07-17)
+
+The `ScopusClient._enrich_abstracts()` method (lines ~1063–1101 in
+`fnd_meta_search.py`) fetches abstracts one-by-one via the Abstract
+Retrieval API for Scopus records missing them at the search stage. As of
+the 2026-07-17 production search, this yielded:
+
+- 0/294 abstracts retrieved (Scopus COMPLETE view already covered 88%)
+- 293/294 full author lists harvested (useful for ASySD dedup author matching)
+- ~4 minutes runtime with zero abstract yield
+
+The 294 missing abstracts appear to be genuinely absent from Scopus (old
+articles, editorial material), not an API access issue.
+
+**Keep for now?** The author-list harvesting has marginal value (ASySD already
+normalizes author names and has a one-side-missing-author rule), and the
+abstract enrichment was designed for API keys *without* COMPLETE view
+entitlement — a scenario we haven't encountered with David's key. It's dead
+weight in the common case but provides a fallback if a different key is used
+that only gets STANDARD view (no abstracts at all from search).
+
+**Decision:** Leave in place, revisit when cleaning up pre-v1.0. If the
+fallback argument doesn't hold, the method and its call sites can be
+removed to simplify the pipeline.
