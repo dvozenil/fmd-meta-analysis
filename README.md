@@ -56,19 +56,23 @@ Source PDFs are kept locally in [docs/references/](docs/references/README.md) an
 
 ## Search script
 
-`fnd_meta_search.py` queries PubMed, Europe PMC, Web of Science, and Scopus via their APIs. PsycINFO is searched manually (no REST API).
+`fnd_meta_search.py` queries PubMed, Europe PMC, Web of Science, and Scopus via their APIs. PsycINFO has no REST API and is searched manually via EBSCOhost. The script supports a **two-phase workflow**: run all searches first, collect manual exports, then deduplicate everything at once.
 
-### Database coverage
+### Quick start
 
-| Database | API | Access | Abstracts |
-|---|---|---|---|
-| **PubMed** | NCBI E-utilities | Free (API key recommended for 10 req/s) | Included in search results |
-| **Europe PMC** | REST API | Free, no key needed | Included in search results |
-| **Scopus** | Elsevier API | Requires `SCOPUS_API_KEY` | Fetched via Abstract Retrieval API (second pass) |
-| **Web of Science** | Clarivate API | Requires institutional license (`WOS_API_KEY`) | If key present; otherwise manual |
-| **PsycINFO** | No REST API | Manual via Ovid/EBSCOhost | Manual export |
+```bash
+# Phase 1: Run searches (API databases only, no dedup)
+python fnd_meta_search.py --full --no-dedup
 
-When API keys are missing, the script skips those databases gracefully and generates manual query files for copy-paste use.
+# (human: run EBSCOhost PsycINFO query from queries.txt, drop CSV into output dir)
+# (human: run WoS query from queries.txt if API unavailable, drop RIS into output dir)
+
+# Phase 2: Deduplicate all sources and export final PRISMA artifacts
+python fnd_meta_search.py --dedup fnd_search_YYYYMMDD_HHMMSS/
+
+# Or run everything in one pass (API databases only, no manual imports)
+python fnd_meta_search.py --full
+```
 
 ### Search modes
 
@@ -92,8 +96,8 @@ python fnd_meta_search.py --ludwig_validation
 python fnd_meta_search.py --full --auto
 
 # Choose deduplication algorithm (default: asysd)
-python fnd_meta_search.py --full --dedup asysd   # ASySD-class (author + abstract similarity)
-python fnd_meta_search.py --full --dedup simple   # DOI + title-hash only
+python fnd_meta_search.py --full --dedup-algo simple   # DOI + title-hash only
+python fnd_meta_search.py --full --dedup-algo asysd    # ASySD-class (default)
 ```
 
 ### Setup
@@ -126,23 +130,44 @@ When using ASySD deduplication (default), enrichment runs **before** dedup so th
 
 ### Deduplication
 
-Two algorithms are available:
+Two algorithms are available via `--dedup-algo`:
 
-- **ASySD-class** (`--dedup asysd`, default): Uses `rapidfuzz` fuzzy string matching on author lists and abstracts to detect duplicates across databases, plus DOI matching. Handles cross-database duplicates (e.g., PubMed/Scopus overlap) that simple DOI matching misses when DOIs are absent.
-- **Simple** (`--dedup simple`): DOI-normalized match + title+year hash. Faster but misses records without DOIs or with variant titles.
+- **ASySD-class** (default): Uses `rapidfuzz` fuzzy string matching on author lists and abstracts to detect duplicates across databases, plus DOI matching. Handles cross-database duplicates (e.g., PubMed/Scopus overlap) that simple DOI matching misses when DOIs are absent.
+- **Simple**: DOI-normalized match + title+year hash. Faster but misses records without DOIs or with variant titles.
+
+### Two-phase workflow
+
+When manual database exports are involved (PsycINFO via EBSCOhost, or WoS when API is unavailable), use the split workflow:
+
+```bash
+# Phase 1: Search only — save raw CSVs and manual queries
+python fnd_meta_search.py --full --no-dedup
+
+# (Add EBSCOhost CSV exports and/or WoS RIS exports to the output directory)
+
+# Phase 2: Dedup all sources and export final artifacts
+python fnd_meta_search.py --dedup fnd_search_YYYYMMDD_HHMMSS/
+```
+
+The dedup phase auto-discovers all sources in the directory:
+- `raw_*.csv` — API exports (Record schema)
+- `EBSCO*.csv` — EBSCOhost exports (PsycINFO / PsycArticles format)
+- `*.ris` — RIS files (WoS or other manual exports)
+
+Multiple RIS files from the same database are automatically combined. The dedup can be re-run safely — it skips manual export files when their corresponding `raw_<db>.csv` already has data.
 
 ### Output
 
 Each run creates a timestamped folder (`fnd_search_YYYYMMDD_HHMMSS/`) containing:
 
 - `queries.json` — exact Boolean strings used (reproducibility anchor)
-- `raw_<database>.csv` — per-database results before dedup
+- `queries.txt` — human-readable query file for copy-paste into manual databases
+- `raw_<database>.csv` — per-database results before dedup (includes manual imports after dedup phase)
 - `records_deduplicated.csv` — unified deduplicated records
-- `records_deduplicated.ris` — RIS export for Rayyan / ASReview
+- `records_deduplicated.ris` — RIS export for Rayyan / ASReview / Covidence / EndNote
 - `maybe_pairs.csv` — uncertain duplicate pairs flagged for human review (ASySD only)
 - `prisma_search_metadata.json` — PRISMA flow diagram numbers
 - `search_log.txt` — full execution log
-- `manual_queries/` — ready-to-paste queries for WoS and PsycINFO (Ovid syntax)
 
 The generated raw screening outputs are not committed by default; the committed benchmark fixtures and summaries are documented in [data/README.md](data/README.md).
 

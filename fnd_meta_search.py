@@ -25,6 +25,13 @@ Databases covered:
   - Scopus                        — requires Elsevier API key
   - PsycINFO                      — no REST API; searched manually via OVID/EBSCOhost
 
+Workflow modes:
+  - Default:    search + dedup in one pass
+  - --no-dedup: search only; save raw CSVs + queries for manual databases;
+                run --dedup <dir> later after adding manual exports
+  - --dedup DIR: load all sources in an existing search directory, deduplicate,
+                 and export final PRISMA artifacts
+
 Dependencies:
     pip install biopython requests python-dotenv
 
@@ -88,45 +95,65 @@ def _parse_args() -> argparse.Namespace:
         help="Run all steps without interactive confirmation prompts",
     )
     parser.add_argument(
-        "--dedup", choices=["asysd", "simple"], default="asysd",
+        "--dedup-algo", choices=["asysd", "simple"], default="asysd",
         help="Deduplication algorithm: 'asysd' (ASySD-class, default) or "
              "'simple' (old DOI+title hash dedup)",
+    )
+    parser.add_argument(
+        "--no-dedup", action="store_true",
+        help="Run search only; skip deduplication (for two-phase workflow). "
+             "Use --dedup <dir> later to deduplicate after adding manual exports.",
+    )
+    parser.add_argument(
+        "--dedup", metavar="DIR", dest="dedup_dir",
+        help="Dedup-only mode: load all sources in an existing search directory, "
+             "deduplicate, and export final PRISMA artifacts.",
     )
     return parser.parse_args()
 
 _cli_args = _parse_args()
-AUTO_MODE = _cli_args.auto
-DEDUP_METHOD = _cli_args.dedup
+AUTO_MODE: bool = _cli_args.auto
+DEDUP_METHOD: str = _cli_args.dedup_algo
+NO_DEDUP: bool = _cli_args.no_dedup
+DEDUP_ONLY_DIR: str | None = _cli_args.dedup_dir
 
 # ---------------------------------------------------------------------------
-# CONFIGURATION
+# CONFIGURATION (conditional on --search vs --dedup mode)
 # ---------------------------------------------------------------------------
 
-# Search mode:
-#   "update"          — 2015 onward (functional imaging track, updating Boeckle)
-#   "full"            — inception to present (structural imaging track)
-#   "os_validation"   — inception to August 2015 using original-study terms
-#   "os_table_recall" — inception to August 2015, broadened terms, no language filter
-SEARCH_MODE = _cli_args.mode or os.getenv("FND_SEARCH_MODE", "update")
-VALID_SEARCH_MODES = {"update", "full", "os_validation", "os_table_recall",
-                      "ludwig_validation"}
-_VALIDATION_MODES = {"os_validation", "os_table_recall", "ludwig_validation"}
-if SEARCH_MODE not in VALID_SEARCH_MODES:
-    raise ValueError(
-        f"Unknown FND_SEARCH_MODE={SEARCH_MODE!r}; expected one of "
-        f"{sorted(VALID_SEARCH_MODES)}"
+if DEDUP_ONLY_DIR:
+    # --dedup mode: use the provided directory, skip search config
+    OUTPUT_DIR = Path(DEDUP_ONLY_DIR)
+    if not OUTPUT_DIR.is_dir():
+        raise SystemExit(f"Search directory not found: {OUTPUT_DIR}")
+    SEARCH_MODE = ""  # not used; loaded from queries.json later
+    SEARCH_START_YEAR: int | None = None
+    SEARCH_END_DATE = ""
+    RUN_ID = OUTPUT_DIR.name
+else:
+    # --search mode (default or --no-dedup)
+    SEARCH_MODE = _cli_args.mode or os.getenv("FND_SEARCH_MODE", "update")
+    VALID_SEARCH_MODES = {"update", "full", "os_validation", "os_table_recall",
+                          "ludwig_validation"}
+    _VALIDATION_MODES = {"os_validation", "os_table_recall", "ludwig_validation"}
+    if SEARCH_MODE not in VALID_SEARCH_MODES:
+        raise ValueError(
+            f"Unknown FND_SEARCH_MODE={SEARCH_MODE!r}; expected one of "
+            f"{sorted(VALID_SEARCH_MODES)}"
+        )
+    SEARCH_START_YEAR = 2015 if SEARCH_MODE == "update" else None
+    _VALIDATION_END_DATES = {
+        "os_validation": "2015/08/31",
+        "os_table_recall": "2015/08/31",
+        "ludwig_validation": "2016/11/04",
+    }
+    DEFAULT_SEARCH_END_DATE = (
+        _VALIDATION_END_DATES.get(SEARCH_MODE, datetime.now().strftime("%Y/%m/%d"))
     )
-
-SEARCH_START_YEAR: int | None = 2015 if SEARCH_MODE == "update" else None
-_VALIDATION_END_DATES = {
-    "os_validation": "2015/08/31",
-    "os_table_recall": "2015/08/31",
-    "ludwig_validation": "2016/11/04",
-}
-DEFAULT_SEARCH_END_DATE = (
-    _VALIDATION_END_DATES.get(SEARCH_MODE, datetime.now().strftime("%Y/%m/%d"))
-)
-SEARCH_END_DATE = os.getenv("FND_SEARCH_END_DATE", DEFAULT_SEARCH_END_DATE)
+    SEARCH_END_DATE = os.getenv("FND_SEARCH_END_DATE", DEFAULT_SEARCH_END_DATE)
+    RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+    OUTPUT_DIR = Path(f"./fnd_search_{RUN_ID}")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # NCBI credentials (required by NCBI; get a free API key at
 # https://www.ncbi.nlm.nih.gov/account/settings/ for 10 req/s vs 3/s)
@@ -137,20 +164,31 @@ Entrez.api_key = os.getenv("NCBI_API_KEY")
 WOS_API_KEY    = os.getenv("WOS_API_KEY")     # Web of Science Expanded API
 SCOPUS_API_KEY = os.getenv("SCOPUS_API_KEY")  # Elsevier Developer Portal
 
-# Output directory — one folder per run for full auditability
-RUN_ID     = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUTPUT_DIR = Path(f"./fnd_search_{RUN_ID}")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler(OUTPUT_DIR / "search_log.txt"),
-        logging.StreamHandler(),
-    ],
-)
+# Module-level log instance — handlers configured in main() after OUTPUT_DIR is final
 log = logging.getLogger(__name__)
+
+
+def _setup_logging(search_dir: Path) -> None:
+    """Configure logging to write to search_dir/search_log.txt.
+
+    In --dedup mode, appends to the existing log file. In --search mode,
+    overwrites (the file is new since the directory is new).
+    """
+    log_path = search_dir / "search_log.txt"
+    mode = "a" if DEDUP_ONLY_DIR else "w"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.FileHandler(log_path, mode=mode),
+            logging.StreamHandler(),
+        ],
+    )
+    # Push config to root so module-level log picks it up
+    log.handlers.clear()
+    log.addHandler(logging.FileHandler(log_path, mode=mode))
+    log.addHandler(logging.StreamHandler())
+    log.setLevel(logging.INFO)
 
 
 # ---------------------------------------------------------------------------
@@ -973,7 +1011,8 @@ class ScopusClient:
             log.info(f"Scopus page size reduced to {page_size} to match the service-level maximum")
         while True:
             params = {"query": query, "count": page_size, "start": start, "view": view}
-            r = requests.get(self.BASE, headers=headers, params=params, timeout=60)
+            # Use POST to avoid 413 Payload Too Large with expanded terms
+            r = requests.post(self.BASE, headers=headers, data=params, timeout=60)
             r.raise_for_status()
             data = r.json()
             entries = data.get("search-results", {}).get("entry", [])
@@ -1289,24 +1328,438 @@ def _write_csv(records: list[Record], path: Path) -> None:
             w.writerow(row)
 
 
-def export_results(records: list[Record], all_records_by_db: dict[str, list[Record]],
+def _read_records_csv(path: Path) -> list[Record]:
+    """Load a CSV file written by _write_csv back into Record objects."""
+    records: list[Record] = []
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                records.append(Record(
+                    source_db=row.get("source_db", ""),
+                    source_id=row.get("source_id", ""),
+                    doi=row.get("doi") or None,
+                    title=row.get("title", ""),
+                    abstract=row.get("abstract", ""),
+                    authors=[a.strip() for a in row.get("authors", "").split("; ") if a.strip()],
+                    journal=row.get("journal", ""),
+                    year=int(row["year"]) if row.get("year") else None,
+                    pub_date=row.get("pub_date", ""),
+                    keywords=[k.strip() for k in row.get("keywords", "").split("; ") if k.strip()],
+                    mesh_terms=[m.strip() for m in row.get("mesh_terms", "").split("; ") if m.strip()],
+                    pub_types=[p.strip() for p in row.get("pub_types", "").split("; ") if p.strip()],
+                    url=row.get("url", ""),
+                    volume=row.get("volume", ""),
+                    issue=row.get("issue", ""),
+                    pages=row.get("pages", ""),
+                    isbn=row.get("isbn", ""),
+                    issn=row.get("issn", ""),
+                ))
+            except Exception:
+                log.warning(f"Could not parse row from {path.name}: {row.get('source_id', '?')}")
+    return records
+
+
+def _import_ebsco_csv(path: Path) -> list[Record]:
+    """Import an EBSCOhost CSV export and convert to Record objects.
+
+    Handles exports from APA PsycInfo (shortDBName=psyh) and
+    APA PsycArticles (shortDBName=pdh). Both are mapped to
+    source_db="psycinfo" for dedup purposes.
+    """
+    records: list[Record] = []
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                db_name = row.get("longDBName", "") or row.get("shortDBName", "")
+                # Normalize to a single source_db label
+                source_db = "psycinfo"
+
+                # Accession number as stable ID
+                an = row.get("an", "")
+
+                # Title
+                title = row.get("title", "") or ""
+
+                # Abstract
+                abstract = row.get("abstract", "") or ""
+
+                # Year from publicationDate (YYYYMMDD) or coverDate
+                year = None
+                pub_date = row.get("publicationDate", "") or row.get("coverDate", "") or ""
+                if pub_date:
+                    try:
+                        year = int(pub_date[:4])
+                    except ValueError:
+                        pass
+
+                # Authors: semicolon-separated, "Last, First M." format
+                authors: list[str] = []
+                contributors = row.get("contributors", "") or ""
+                if contributors:
+                    authors = [a.strip() for a in contributors.split(";") if a.strip()]
+
+                # Journal
+                journal = row.get("source", "") or ""
+
+                # DOI
+                doi = row.get("doi") or None
+
+                # ISSN / ISBN
+                issn = row.get("issns", "") or ""
+                isbn = row.get("isbns", "") or ""
+
+                # Volume / Issue / Pages
+                volume = row.get("volume", "") or ""
+                issue = row.get("issue", "") or ""
+                page_start = row.get("pageStart", "") or ""
+                page_end = row.get("pageEnd", "") or ""
+                pages = f"{page_start}-{page_end}" if page_start and page_end else (page_start or page_end or "")
+
+                # Keywords: semicolon-separated subjects
+                keywords: list[str] = []
+                subjects = row.get("subjects", "") or ""
+                if subjects:
+                    keywords = [s.strip() for s in subjects.split(";") if s.strip()]
+
+                # Publication types
+                pub_types: list[str] = []
+                pub_types_str = row.get("pubTypes", "") or ""
+                if pub_types_str:
+                    pub_types = [p.strip() for p in pub_types_str.split(";") if p.strip()]
+
+                # URL
+                url = row.get("plink", "") or ""
+
+                records.append(Record(
+                    source_db=source_db,
+                    source_id=an,
+                    doi=doi,
+                    title=title,
+                    abstract=abstract,
+                    authors=authors,
+                    journal=journal,
+                    year=year,
+                    pub_date=pub_date,
+                    keywords=keywords,
+                    pub_types=pub_types,
+                    url=url,
+                    volume=volume,
+                    issue=issue,
+                    pages=pages,
+                    isbn=isbn,
+                    issn=issn,
+                ))
+            except Exception:
+                log.warning(f"Could not parse EBSCO row from {path.name}: {row.get('an', '?')}")
+
+    return records
+
+
+def _import_ris(path: Path, source_db: str) -> list[Record]:
+    """Import a RIS file and convert to Record objects.
+
+    The ``source_db`` parameter sets the source_db field for all records
+    (e.g. "wos" for WoS manual RIS exports).
+    """
+    records: list[Record] = []
+    current: dict[str, list[str]] = {}
+
+    def _flush() -> Record | None:
+        """Build a Record from the accumulated current dict."""
+        if not current:
+            return None
+        title = " ".join(current.get("TI", []))
+        if not title.strip():
+            return None
+
+        authors = current.get("AU", [])
+        journal = " ".join(current.get("T2", []) or current.get("JO", []))
+        doi = " ".join(current.get("DO", [])).strip() or None
+        abstract = " ".join(current.get("AB", []))
+        keywords = current.get("KW", [])
+
+        year = None
+        py_list = current.get("PY", [])
+        if py_list:
+            try:
+                year = int(py_list[0].strip()[:4])
+            except ValueError:
+                pass
+
+        volume = " ".join(current.get("VL", []))
+        issue = " ".join(current.get("IS", []))
+        sp = " ".join(current.get("SP", []))
+        ep = " ".join(current.get("EP", []))
+        pages = f"{sp}-{ep}" if sp and ep else (sp or ep)
+        url = " ".join(current.get("UR", []))
+        issn = " ".join(current.get("SN", []))
+
+        source_id = f"ris:{doi or title[:50]}"
+
+        return Record(
+            source_db=source_db,
+            source_id=source_id,
+            doi=doi,
+            title=title,
+            abstract=abstract,
+            authors=authors,
+            journal=journal,
+            year=year,
+            pub_date=" ".join(py_list),
+            keywords=keywords,
+            url=url,
+            volume=volume,
+            issue=issue,
+            pages=pages,
+            issn=issn,
+        )
+
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n\r")
+            if line.startswith("ER  ") or line == "ER  -":
+                rec = _flush()
+                if rec:
+                    records.append(rec)
+                current = {}
+            elif len(line) >= 6 and line[2:4] == "  ":
+                tag = line[:2]
+                value = line[6:].strip()
+                current.setdefault(tag, []).append(value)
+
+        # Flush trailing record if file doesn't end with ER
+        rec = _flush()
+        if rec:
+            records.append(rec)
+
+    return records
+
+
+def _collect_all_sources(search_dir: Path) -> tuple[list[Record], dict[str, list[Record]], dict[str, int]]:
+    """Discover and load all data sources from a search directory.
+
+    Returns (all_records, all_records_by_db, per_db_counts).
+    """
+    all_records: list[Record] = []
+    all_records_by_db: dict[str, list[Record]] = {}
+    per_db: dict[str, int] = {}
+
+    # 1. Load raw_*.csv files (API exports in Record schema)
+    raw_csvs = sorted(search_dir.glob("raw_*.csv"))
+    for csv_path in raw_csvs:
+        db_name = csv_path.stem.replace("raw_", "")  # e.g. "pubmed", "scopus"
+        recs = _read_records_csv(csv_path)
+        if recs:
+            all_records_by_db[db_name] = recs
+            per_db[db_name] = len(recs)
+            all_records.extend(recs)
+            log.info(f"Loaded {len(recs)} records from {csv_path.name} (db={db_name})")
+        else:
+            log.info(f"Skipping empty raw CSV: {csv_path.name}")
+
+    # Snapshot of which databases already have real data from raw CSVs.
+    # Used to skip re-import of manual export files on subsequent dedup runs.
+    dbs_from_raw_csv = {db for db, recs in all_records_by_db.items() if recs}
+
+    # 2. Import EBSCO CSV exports (EBSCOhost format)
+    ebsco_csvs = sorted(search_dir.glob("EBSCO*.csv")) + sorted(search_dir.glob("ebsco*.csv"))
+    seen_ebsco_ids: set[str] = set()
+    psycinfo_recs: list[Record] = []
+    for csv_path in ebsco_csvs:
+        # Skip files that look like raw_* CSVs we already handled
+        if csv_path.name.startswith("raw_"):
+            continue
+        # Skip EBSCO CSVs when raw_psycinfo.csv already had data from a prior run
+        if "psycinfo" in dbs_from_raw_csv:
+            log.info(f"Skipping {csv_path.name}: raw_psycinfo.csv already has "
+                     f"{len(all_records_by_db['psycinfo'])} records")
+            continue
+        recs = _import_ebsco_csv(csv_path)
+        new = 0
+        for r in recs:
+            if r.source_id not in seen_ebsco_ids:
+                seen_ebsco_ids.add(r.source_id)
+                psycinfo_recs.append(r)
+                new += 1
+        log.info(f"Imported {len(recs)} records from {csv_path.name} "
+                 f"({new} new, {len(recs) - new} duplicate within EBSCO files)")
+
+    if psycinfo_recs:
+        db_name = "psycinfo"
+        all_records_by_db[db_name] = psycinfo_recs
+        per_db[db_name] = len(psycinfo_recs)
+        all_records.extend(psycinfo_recs)
+        log.info(f"Total psycinfo records after dedup within EBSCO files: {len(psycinfo_recs)}")
+
+    # 3. Import RIS files (manual exports from WoS or other DBs).
+    # Skip RIS files only when the corresponding raw CSV already had data
+    # (from a prior dedup run), not when the db was just populated by another
+    # RIS file in the same batch.
+    ris_files = sorted(search_dir.glob("*.ris"))
+    for ris_path in ris_files:
+        # Skip our own deduplicated export
+        if ris_path.name == "records_deduplicated.ris":
+            continue
+        # Guess source_db from filename
+        stem_lower = ris_path.stem.lower()
+        if "wos" in stem_lower or "web_of_science" in stem_lower:
+            ris_db = "wos"
+        elif "psycinfo" in stem_lower or "ebsco" in stem_lower:
+            ris_db = "psycinfo"
+        elif "scopus" in stem_lower:
+            ris_db = "scopus"
+        else:
+            ris_db = ris_path.stem  # use filename as db name
+
+        recs = _import_ris(ris_path, ris_db)
+        if recs:
+            # Skip RIS files when raw CSV for the same db already had data
+            # from a prior dedup run (not from another RIS file in this batch).
+            if ris_db in dbs_from_raw_csv:
+                log.info(f"Skipping {ris_path.name}: raw_{ris_db}.csv already has "
+                         f"{len(all_records_by_db[ris_db])} records")
+                continue
+            # If we already have records for this db from another RIS file, append
+            if ris_db in all_records_by_db:
+                all_records_by_db[ris_db].extend(recs)
+                per_db[ris_db] = per_db.get(ris_db, 0) + len(recs)
+            else:
+                all_records_by_db[ris_db] = recs
+                per_db[ris_db] = len(recs)
+            all_records.extend(recs)
+            log.info(f"Imported {len(recs)} records from {ris_path.name} (db={ris_db})")
+
+    return all_records, all_records_by_db, per_db
+
+
+
+def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[list[Record], dict[str, int]]:
+    """Run deduplication on the combined record pool.
+
+    Returns (deduped_records, dedup_stats).
+    """
+    log.info(f"Total raw records across all sources: {len(all_records)}")
+    log.info(f"Deduplication method: {DEDUP_METHOD}")
+
+    maybe_pairs_data = []
+
+    if DEDUP_METHOD == "asysd" and deduplicate_asysd is not None:
+        # ── Pre-normalize records for ASySD matching ──────────────────────
+        # ASySD strips punctuation before comparing fields.  WoS RIS exports
+        # use hyphens in compound terms ("MAGNETIC-RESONANCE") where
+        # PubMed/Scopus use spaces ("MAGNETIC RESONANCE").  After
+        # punctuation stripping these become "MAGNETICRESONANCE" vs
+        # "MAGNETIC RESONANCE", breaking title similarity even though they
+        # are the same paper.  We replace hyphens with spaces before
+        # passing to ASySD so both become "MAGNETIC RESONANCE".
+        #
+        # Authors have similar issues: periods in initials ("BLACK D.N."
+        # vs "BLACK DEBORAH N") reduce Jaro-Winkler similarity below the
+        # 0.75 threshold in the DOI-matching rule.  Stripping periods and
+        # collapsing whitespace normalizes these differences.
+        #
+        # These normalizations are lossy for dedup purposes but safe:
+        # they only affect the similarity computation, not the stored data.
+        asysd_input = []
+        for r in all_records:
+            title_norm = " ".join(r.title.replace("-", " ").split())
+            abstract_norm = " ".join(r.abstract.replace("-", " ").split()) if r.abstract else ""
+            # Normalize authors: strip periods and collapse whitespace so
+            # "BLACK D.N." and "BLACK DEBORAH N" both become "BLACK DN" / "BLACK DEBORAH N"
+            author_str = "; ".join(r.authors) if r.authors else None
+            if author_str:
+                author_str = " ".join(author_str.replace(".", " ").split())
+            asysd_input.append({
+                "source": r.source_db,
+                "record_id": r.source_id,
+                "author": author_str,
+                "title": title_norm,
+                "year": str(r.year) if r.year else None,
+                "journal": r.journal,
+                "abstract": abstract_norm,
+                "doi": r.doi,
+                "pages": r.pages or None,
+                "volume": r.volume or None,
+                "number": r.issue or None,
+                "isbn": r.isbn or None,
+                "label": r.source_db,
+            })
+        asysd_unique, asysd_stats, maybe_pairs_data = deduplicate_asysd(
+            asysd_input, keep_source="pubmed"
+        )
+
+        # Convert back: map unique record_ids back to Record objects
+        record_by_id: dict[str, Record] = {}
+        for r in all_records:
+            record_by_id[r.source_id] = r
+
+        deduped = []
+        for rec_dict in asysd_unique:
+            rid = rec_dict.get("record_id", "")
+            if rid in record_by_id:
+                deduped.append(record_by_id[rid])
+            else:
+                # Fallback: search by duplicate_id
+                dup_id = rec_dict.get("duplicate_id", "")
+                if dup_id in record_by_id:
+                    deduped.append(record_by_id[dup_id])
+
+        dedup_stats = {
+            "total_raw": asysd_stats["total_raw"],
+            "unique": len(deduped),
+            "duplicates_removed": asysd_stats["duplicates_removed"],
+            "method": "asysd",
+        }
+
+        # Export maybe_pairs to CSV
+        if maybe_pairs_data:
+            maybe_path = search_dir / "maybe_pairs.csv"
+            with open(maybe_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(maybe_pairs_data[0].keys()))
+                w.writeheader()
+                for row in maybe_pairs_data:
+                    w.writerow(row)
+            log.info(f"Wrote {len(maybe_pairs_data)} maybe-pairs -> {maybe_path}")
+
+    else:
+        if DEDUP_METHOD == "asysd" and deduplicate_asysd is None:
+            log.warning("ASySD dedup not available (dedup_asysd module not found), "
+                        "falling back to simple dedup")
+        deduped, dedup_stats = deduplicate_simple(all_records)
+        dedup_stats["method"] = "simple"
+
+    log.info(f"After dedup: {len(deduped)} unique records "
+             f"({dedup_stats['duplicates_removed']} duplicates removed)")
+
+    return deduped, dedup_stats
+
+
+def export_results(records: list[Record],
+                   all_records_by_db: dict[str, list[Record]],
                    queries: dict[str, str],
-                   per_db_counts: dict[str, int], dedup_stats: dict[str, int]) -> None:
-    """Writes all PRISMA-required artifacts to OUTPUT_DIR."""
+                   per_db_counts: dict[str, int],
+                   dedup_stats: dict[str, int],
+                   output_dir: Path,
+                   search_mode: str,
+                   search_start_year: int | None,
+                   search_end_date: str) -> None:
+    """Writes all PRISMA-required artifacts to output_dir."""
 
     # 1. Per-database raw CSVs (pre-dedup, for auditability)
     for db_name, db_records in all_records_by_db.items():
-        raw_path = OUTPUT_DIR / f"raw_{db_name}.csv"
+        raw_path = output_dir / f"raw_{db_name}.csv"
         _write_csv(db_records, raw_path)
         log.info(f"Wrote {len(db_records)} raw records from {db_name} -> {raw_path}")
 
     # 2. Deduplicated CSV
-    csv_path = OUTPUT_DIR / "records_deduplicated.csv"
+    csv_path = output_dir / "records_deduplicated.csv"
     _write_csv(records, csv_path)
     log.info(f"Wrote {len(records)} deduplicated records -> {csv_path}")
 
     # 3. RIS export for Rayyan / ASReview / Covidence / EndNote
-    ris_path = OUTPUT_DIR / "records_deduplicated.ris"
+    ris_path = output_dir / "records_deduplicated.ris"
     with open(ris_path, "w", encoding="utf-8") as f:
         for r in records:
             f.write("TY  - JOUR\n")
@@ -1344,7 +1797,7 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
     log.info(f"Wrote RIS export -> {ris_path}")
 
     # 4. PRISMA search metadata
-    if SEARCH_MODE == "os_validation":
+    if search_mode == "os_validation":
         search_scope_note = (
             "OS validation mode approximates the Boeckle et al. (2016) search "
             "terms and end date for pipeline validation only. It is not the "
@@ -1352,13 +1805,13 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
         )
         filters_applied = {
             "language": "English in non-PubMed API queries where supported",
-            "date": f"inception to {SEARCH_END_DATE}",
+            "date": f"inception to {search_end_date}",
             "screening_filters": (
                 "Human/adult/primary research criteria are applied during "
                 "screening to stay close to the original study workflow."
             ),
         }
-    elif SEARCH_MODE == "os_table_recall":
+    elif search_mode == "os_table_recall":
         search_scope_note = (
             "Table-recall mode uses broadened search terms to maximise "
             "recovery of the 49 studies in Boeckle et al. Table 1. Language "
@@ -1367,13 +1820,13 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
         )
         filters_applied = {
             "language": "None at search stage — apply during screening",
-            "date": f"inception to {SEARCH_END_DATE}",
+            "date": f"inception to {search_end_date}",
             "screening_filters": (
                 "Language (English), human/adult, and primary-research "
                 "criteria should all be applied during screening."
             ),
         }
-    elif SEARCH_MODE == "ludwig_validation":
+    elif search_mode == "ludwig_validation":
         search_scope_note = (
             "Ludwig validation mode replicates the search strategy from "
             "Ludwig et al. (2018) Lancet Psychiatry (trauma/stressors in "
@@ -1383,7 +1836,7 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
         )
         filters_applied = {
             "language": "None at search stage — apply during screening",
-            "date": f"inception to {SEARCH_END_DATE}",
+            "date": f"inception to {search_end_date}",
             "query_structure": "3-block AND (FND x stressor x study-design)",
             "screening_filters": (
                 "Language (English) applied during screening."
@@ -1406,32 +1859,70 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
         "os_table_recall": "Boeckle et al. 2016 Table 1 recall (broadened terms)",
         "ludwig_validation": "Ludwig et al. 2018 trauma-in-FND validation",
     }
+
+    # Determine which databases were automated vs manual
+    automated_dbs = [k for k in queries.keys() if k != "ebsco_psycinfo"]
+    manual_dbs = []
+    # EBSCO PsycInfo: show as not automated only if not already imported
+    if "ebsco_psycinfo" in queries and "psycinfo" not in per_db_counts:
+        manual_dbs.append(
+            "APA PsycInfo / PsycArticles (EBSCOhost) — query in ebsco_psycinfo; "
+            "export manually from web UI with date filter applied"
+        )
+    # Any additional dbs in per_db that aren't in queries are manual imports
+    # (skip psycinfo — it corresponds to ebsco_psycinfo query)
+    for db in per_db_counts:
+        if db not in queries and db != "psycinfo":
+            manual_dbs.append(f"{db} (manual import)")
+
+    # De-duplicate database names: ebsco_psycinfo (query name) and
+    # psycinfo (imported db) refer to the same source.
+    db_names = set(per_db_counts.keys())
+    db_names.update(k for k in queries.keys() if k != "ebsco_psycinfo")
+    if "ebsco_psycinfo" in queries and "psycinfo" not in per_db_counts:
+        db_names.add("ebsco_psycinfo")
+
+    # Count records missing abstracts (per-database and total)
+    missing_abstracts: dict[str, int] = {}
+    for r in records:
+        if not r.abstract.strip():
+            missing_abstracts[r.source_db] = missing_abstracts.get(r.source_db, 0) + 1
+    total_missing = sum(missing_abstracts.values())
+
     prisma_meta = {
-        "run_id": RUN_ID,
-        "search_mode": SEARCH_MODE,
+        "run_id": output_dir.name,
+        "search_mode": search_mode,
         "search_profile": _search_profiles.get(
-            SEARCH_MODE, "expanded FND neuroimaging protocol"
+            search_mode, "expanded FND neuroimaging protocol"
         ),
         "search_date": datetime.now(timezone.utc).isoformat(),
         "search_range": (
-            f"{SEARCH_START_YEAR}-01-01 to {SEARCH_END_DATE}"
-            if SEARCH_START_YEAR else f"inception to {SEARCH_END_DATE}"
+            f"{search_start_year}-01-01 to {search_end_date}"
+            if search_start_year else f"inception to {search_end_date}"
         ),
-        "databases_searched": list(queries.keys()),
-        "databases_not_automated": [
-            "APA PsycInfo / PsycArticles (EBSCOhost) — query in ebsco_psycinfo;",
-            "export manually from web UI with date filter applied"
-        ],
+        "databases_searched": sorted(db_names),
+        "databases_not_automated": manual_dbs,
         "queries": queries,
         "records_per_database": per_db_counts,
         "deduplication": dedup_stats,
+        "abstracts_missing": {
+            "total": total_missing,
+            "total_records": len(records),
+            "percent": round(total_missing / len(records) * 100, 1) if records else 0,
+            "by_database": missing_abstracts,
+        },
         "filters_applied": filters_applied,
         "notes": search_scope_note,
     }
-    meta_path = OUTPUT_DIR / "prisma_search_metadata.json"
+    meta_path = output_dir / "prisma_search_metadata.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(prisma_meta, f, indent=2)
     log.info(f"Wrote PRISMA metadata -> {meta_path}")
+    if total_missing > 0:
+        log.warning(f"Records missing abstracts: {total_missing}/{len(records)} ({total_missing/len(records)*100:.1f}%)")
+        for db, n in sorted(missing_abstracts.items()):
+            db_total = per_db_counts.get(db, 0)
+            log.warning(f"  {db}: {n}/{db_total} missing ({n/db_total*100:.1f}%)" if db_total else f"  {db}: {n} missing")
 
 
 # ---------------------------------------------------------------------------
@@ -1449,10 +1940,16 @@ def _confirm(prompt: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# MAIN
+# PHASE 1: SEARCH
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def run_searches() -> tuple[list[Record], dict[str, list[Record]], dict[str, int], dict[str, str]]:
+    """Execute API searches across all configured databases.
+
+    Returns (all_records, all_records_by_db, per_db_counts, queries).
+    Raw CSVs are NOT written here — that happens in export_results after dedup
+    (or in run_dedup for the two-phase workflow).
+    """
     log.info(f"Search mode: {SEARCH_MODE}")
     if SEARCH_MODE == "os_validation":
         log.info("Using Boeckle et al. (2016) validation terms")
@@ -1472,6 +1969,9 @@ def main() -> None:
         "wos":            build_wos_query(),
         "scopus":         build_scopus_query(),
         "ebsco_psycinfo": build_ebsco_psycinfo_query(),
+        "_search_mode":   SEARCH_MODE,
+        "_search_start_year": SEARCH_START_YEAR,
+        "_search_end_date": SEARCH_END_DATE,
     }
 
     with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
@@ -1506,7 +2006,7 @@ def main() -> None:
 
     # -- Summary of search results ------------------------------------------
     log.info("=" * 60)
-    log.info("Search results summary:")
+    log.info("Search results summary (API databases):")
     total_raw = sum(per_db.values())
     for db, n in per_db.items():
         log.info(f"  {db}: {n} records")
@@ -1527,110 +2027,176 @@ def main() -> None:
             log.info("Skipping Scopus abstract enrichment (re-run with --auto to skip this prompt)")
 
     # -- Scopus pre-dedup enrichment (ASySD) -------------------------------
-    # ASySD dedup uses author + abstract similarity. Under STANDARD view the
-    # Search API returns only dc:creator (first author) and no abstract, so we
-    # must enrich ALL Scopus records (abstracts + full author lists) BEFORE
-    # deduplication. Under COMPLETE view the Search API already returns the
-    # full author array and abstract inline, so _enrich_abstracts is a near
-    # no-op (only fetches records still missing an abstract). Either way the
-    # matcher sees real data. Simple dedup skips this and enriches post-dedup.
-    pre_dedup_enriched = False
-    if DEDUP_METHOD == "asysd" and (scopus_abstracts_fetched or AUTO_MODE):
+    # When dedup will run in the same session (default mode), enrich Scopus
+    # records now so the dedup matcher has real author/abstract data.
+    # In --no-dedup mode, we still offer enrichment so the raw CSVs are as
+    # complete as possible.
+    if (scopus_abstracts_fetched or AUTO_MODE):
         scopus_all = [r for r in all_records if r.source_db == "scopus"]
         if scopus_all:
             need = [r for r in scopus_all if not r.abstract]
-            log.info(f"Enriching Scopus records before ASySD dedup: "
-                     f"{len(need)}/{len(scopus_all)} missing abstracts "
-                     f"(full author lists harvested from the same calls)")
-            ScopusClient()._enrich_abstracts(scopus_all)
-            pre_dedup_enriched = True
+            if need:
+                log.info(f"Enriching Scopus records: {len(need)}/{len(scopus_all)} "
+                         f"missing abstracts (full author lists harvested from the same calls)")
+                ScopusClient()._enrich_abstracts(scopus_all)
 
-    # -- Deduplication ------------------------------------------------------
-    log.info(f"Total raw records across all DBs: {len(all_records)}")
-    log.info(f"Deduplication method: {DEDUP_METHOD}")
+    return all_records, all_records_by_db, per_db, queries
 
-    maybe_pairs_data = []
 
-    if DEDUP_METHOD == "asysd" and deduplicate_asysd is not None:
-        # Convert Records to dicts for ASySD
-        asysd_input = []
-        for r in all_records:
-            asysd_input.append({
-                "source": r.source_db,
-                "record_id": r.source_id,
-                "author": "; ".join(r.authors) if r.authors else None,
-                "title": r.title,
-                "year": str(r.year) if r.year else None,
-                "journal": r.journal,
-                "abstract": r.abstract,
-                "doi": r.doi,
-                "pages": r.pages or None,
-                "volume": r.volume or None,
-                "number": r.issue or None,
-                "isbn": r.isbn or None,
-                "label": r.source_db,
-            })
-        asysd_unique, asysd_stats, maybe_pairs_data = deduplicate_asysd(
-            asysd_input, keep_source="pubmed"
-        )
+# ---------------------------------------------------------------------------
+# PHASE 2: DEDUP
+# ---------------------------------------------------------------------------
 
-        # Convert back: map unique record_ids back to Record objects
-        # Build index of all records by source_id
-        record_by_id: dict[str, Record] = {}
-        for r in all_records:
-            record_by_id[r.source_id] = r
+def run_dedup(search_dir: Path) -> None:
+    """Load all sources from a search directory, deduplicate, and export.
 
-        deduped = []
-        for rec_dict in asysd_unique:
-            rid = rec_dict.get("record_id", "")
-            if rid in record_by_id:
-                deduped.append(record_by_id[rid])
-            else:
-                # Fallback: search by duplicate_id
-                dup_id = rec_dict.get("duplicate_id", "")
-                if dup_id in record_by_id:
-                    deduped.append(record_by_id[dup_id])
+    This is the entry point for --dedup <dir> mode. It discovers:
+      - raw_*.csv files (API exports in Record schema)
+      - EBSCO*.csv / ebsco*.csv files (EBSCOhost manual exports)
+      - *.ris files (WoS or other manual RIS exports, except records_deduplicated.ris)
+    """
+    log.info(f"Dedup-only mode on directory: {search_dir.resolve()}")
 
-        dedup_stats = {
-            "total_raw": asysd_stats["total_raw"],
-            "unique": len(deduped),
-            "duplicates_removed": asysd_stats["duplicates_removed"],
-            "method": "asysd",
-        }
-
-        # Export maybe_pairs to CSV
-        if maybe_pairs_data:
-            maybe_path = OUTPUT_DIR / "maybe_pairs.csv"
-            with open(maybe_path, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=list(maybe_pairs_data[0].keys()))
-                w.writeheader()
-                for row in maybe_pairs_data:
-                    w.writerow(row)
-            log.info(f"Wrote {len(maybe_pairs_data)} maybe-pairs -> {maybe_path}")
-
+    # Load queries from the search phase (for PRISMA metadata)
+    queries_path = search_dir / "queries.json"
+    queries: dict[str, str] = {}
+    _search_mode_from_queries = ""
+    _search_start_year_from_queries: int | None = None
+    _search_end_date_from_queries = ""
+    if queries_path.exists():
+        with open(queries_path, "r", encoding="utf-8") as f:
+            raw_queries = json.load(f)
+        # Extract metadata keys (prefixed with _) before using as db queries
+        _search_mode_from_queries = raw_queries.pop("_search_mode", "")
+        _search_start_year_from_queries = raw_queries.pop("_search_start_year", None)
+        _search_end_date_from_queries = raw_queries.pop("_search_end_date", "")
+        queries = raw_queries
+        log.info(f"Loaded queries.json ({len(queries)} databases, mode={_search_mode_from_queries})")
     else:
-        if DEDUP_METHOD == "asysd" and deduplicate_asysd is None:
-            log.warning("ASySD dedup not available (dedup_asysd module not found), "
-                        "falling back to simple dedup")
-        deduped, dedup_stats = deduplicate_simple(all_records)
-        dedup_stats["method"] = "simple"
+        log.warning("queries.json not found — PRISMA metadata will not include query strings")
 
-    log.info(f"After dedup: {len(deduped)} unique records "
-             f"({dedup_stats['duplicates_removed']} duplicates removed)")
+    # Prefer metadata from queries.json (written during search phase),
+    # fall back to existing prisma_search_metadata.json if queries.json is missing.
+    search_mode = _search_mode_from_queries
+    search_start_year = _search_start_year_from_queries
+    search_end_date = _search_end_date_from_queries
 
-    # Fetch abstracts only for deduplicated Scopus-sourced records missing them.
-    # PubMed/Europe PMC already include abstracts; duplicates have been removed.
-    # Skip when we already enriched pre-dedup (ASySD path) — those records are
-    # the same objects, already enriched, so this would just re-fetch failures.
-    if not pre_dedup_enriched and (AUTO_MODE or scopus_abstracts_fetched):
-        scopus_need_abstract = [r for r in deduped
-                                if r.source_db == "scopus" and not r.abstract]
-        if scopus_need_abstract:
-            log.info(f"Fetching abstracts for {len(scopus_need_abstract)} Scopus-only "
-                     f"records (post-dedup)")
-            ScopusClient()._enrich_abstracts(scopus_need_abstract)
+    if not search_mode:
+        existing_meta_path = search_dir / "prisma_search_metadata.json"
+        if existing_meta_path.exists():
+            try:
+                with open(existing_meta_path, "r", encoding="utf-8") as f:
+                    existing_meta = json.load(f)
+                search_mode = existing_meta.get("search_mode", "")
+                search_range = existing_meta.get("search_range", "inception to ")
+                if "inception" not in search_range and " to " in search_range:
+                    parts = search_range.split(" to ")
+                    try:
+                        search_start_year = int(parts[0][:4])
+                    except ValueError:
+                        pass
+                    search_end_date = parts[1]
+                else:
+                    search_end_date = search_range.replace("inception to ", "")
+                log.info(f"Loaded existing metadata: mode={search_mode}, range={search_range}")
+            except (json.JSONDecodeError, KeyError):
+                log.warning("Could not parse existing prisma_search_metadata.json")
 
-    export_results(deduped, all_records_by_db, queries, per_db, dedup_stats)
+    # Collect all data sources
+    all_records, all_records_by_db, per_db = _collect_all_sources(search_dir)
+
+    if not all_records:
+        log.error("No records found in any source file. Aborting.")
+        return
+
+    # Report what was found
+    log.info("=" * 60)
+    log.info("Sources discovered:")
+    for db, n in per_db.items():
+        log.info(f"  {db}: {n} records")
+    log.info(f"  TOTAL: {len(all_records)} raw records across {len(per_db)} databases")
+    log.info("=" * 60)
+
+    # Deduplication
+    deduped, dedup_stats = _run_deduplication(all_records, search_dir)
+
+    # Export
+    export_results(
+        deduped, all_records_by_db, queries, per_db, dedup_stats,
+        output_dir=search_dir,
+        search_mode=search_mode,
+        search_start_year=search_start_year,
+        search_end_date=search_end_date,
+    )
+
+    log.info("=" * 60)
+    log.info("PRISMA flow diagram numbers:")
+    for db, n in per_db.items():
+        log.info(f"  Records identified from {db}: {n}")
+    log.info(f"  Records after duplicates removed: {dedup_stats['unique']}")
+    if dedup_stats.get("method") == "simple" and "doi_collisions_rescued" in dedup_stats:
+        log.info(f"  DOI collisions rescued: {dedup_stats['doi_collisions_rescued']}")
+    log.info("=" * 60)
+    log.info("Next step: import records_deduplicated.ris into Rayyan or ASReview")
+    log.info("for title/abstract screening.")
+
+
+# ---------------------------------------------------------------------------
+# MAIN DISPATCHER
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    _setup_logging(OUTPUT_DIR)
+
+    if DEDUP_ONLY_DIR:
+        # --dedup <dir>: load + dedup + export only
+        run_dedup(OUTPUT_DIR)
+        return
+
+    # --search mode (default or --no-dedup)
+    all_records, all_records_by_db, per_db, queries = run_searches()
+
+    if NO_DEDUP:
+        # Search-only mode: save raw CSVs, print instructions, stop
+        log.info("--no-dedup: skipping deduplication. Saving raw per-database CSVs.")
+        for db_name, db_records in all_records_by_db.items():
+            raw_path = OUTPUT_DIR / f"raw_{db_name}.csv"
+            _write_csv(db_records, raw_path)
+            log.info(f"Wrote {len(db_records)} raw records from {db_name} -> {raw_path}")
+
+        log.info("=" * 60)
+        log.info("Search phase complete. Manual exports needed:")
+        log.info("  1. EBSCOhost PsycInfo: copy query from queries.txt -> "
+                 "run on EBSCOhost -> export as CSV -> drop file(s) into:")
+        log.info(f"     {OUTPUT_DIR.resolve()}")
+        log.info("  2. (If WoS API was unavailable) WoS: copy query from queries.txt -> "
+                 "run on Web of Science -> export as RIS -> drop file into:")
+        log.info(f"     {OUTPUT_DIR.resolve()}")
+        log.info("")
+        log.info("Once all manual exports are added, run:")
+        log.info(f"  python fnd_meta_search.py --dedup {OUTPUT_DIR}")
+        log.info("=" * 60)
+        return
+
+    # Default mode: search + dedup + export in one pass
+    deduped, dedup_stats = _run_deduplication(all_records, OUTPUT_DIR)
+
+    # Fetch abstracts for deduplicated Scopus-sourced records still missing them.
+    # This covers the post-dedup path for simple dedup where we didn't pre-enrich.
+    scopus_need_abstract = [r for r in deduped
+                            if r.source_db == "scopus" and not r.abstract]
+    if scopus_need_abstract:
+        log.info(f"Fetching abstracts for {len(scopus_need_abstract)} Scopus-only "
+                 f"records (post-dedup)")
+        ScopusClient()._enrich_abstracts(scopus_need_abstract)
+
+    export_results(
+        deduped, all_records_by_db, queries, per_db, dedup_stats,
+        output_dir=OUTPUT_DIR,
+        search_mode=SEARCH_MODE,
+        search_start_year=SEARCH_START_YEAR,
+        search_end_date=SEARCH_END_DATE,
+    )
 
     log.info("=" * 60)
     log.info("PRISMA flow diagram numbers:")
