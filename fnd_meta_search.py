@@ -1330,6 +1330,9 @@ def main() -> None:
 
     with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
         json.dump(queries, f, indent=2)
+    with open(OUTPUT_DIR / "queries.txt", "w", encoding="utf-8") as f:
+        for db, q in queries.items():
+            f.write(f"--- {db} ---\n{q}\n\n")
     log.info(f"Run ID: {RUN_ID}")
     log.info(f"Output: {OUTPUT_DIR.resolve()}")
 
