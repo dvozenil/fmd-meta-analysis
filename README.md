@@ -9,6 +9,7 @@ Updated and extended meta-analysis of neuroimaging findings in Functional Neurol
 | **PI** | Petr Sojka |
 | **Student lead** | David Voženílek |
 | **GitHub** | [dvozenil/fmd-meta-analysis](https://github.com/dvozenil/fmd-meta-analysis) |
+| **Notion** | [Project hub](https://app.notion.com/p/352cf8786b8180c0b2d4ecb65b85c14d) · [Protocol](https://app.notion.com/p/352cf8786b81816fb261cff71e17249f) |
 | **Status** | Search pipeline ready — production search next |
 
 ## What this extends
@@ -16,7 +17,7 @@ Updated and extended meta-analysis of neuroimaging findings in Functional Neurol
 Boeckle et al. (2016) conducted an ALE meta-analysis of **functional** neuroimaging in **motor** conversion disorder, including 12 studies (187 subjects). This update:
 
 - Extends the search window from August 2015 to present
-- Broadens scope to **all FND subtypes** (motor, sensory, PNES, vestibular, mixed)
+- Broadens scope to **all FND subtypes** (motor, sensory, PNES, mixed)
 - Adds a **structural neuroimaging** ALE track (VBM, cortical thickness, DTI) — searched from inception
 - Uses updated FND/DSM-5/ICD-11 terminology
 - Follows **PRISMA 2020** guidelines with pre-registration on PROSPERO
