@@ -436,6 +436,18 @@ def _build_scopus_phrase_or_block(terms: list[str]) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
+def _build_ebsco_tiabsu_block(terms: list[str]) -> str:
+    """Build EBSCO (TI OR AB OR SU) block for a list of terms.
+
+    SU (Subjects) in APA PsycInfo indexes both author-supplied keywords
+    and APA Thesaurus controlled subject headings — verified broader
+    coverage than KW (author keywords only) and narrower than TX
+    (All Text, which hits full text and returns ~88% noise).
+    """
+    phrase_or = " OR ".join(f'"{t}"' for t in terms)
+    return f'(TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))'
+
+
 def _build_pubmed_text_block(terms: list[str]) -> str:
     return " OR ".join(f'"{t}"[tiab]' for t in terms)
 
@@ -512,6 +524,38 @@ def build_europepmc_query() -> str:
         design = _build_europepmc_phrase_or_block(config.block_c)
         query += f' AND (TITLE_ABS:({design}))'
     return f'{query}{lang_part}{date_part}'
+
+
+def build_ebsco_psycinfo_query() -> str:
+    """EBSCOhost APA PsycInfo / PsycArticles syntax.
+
+    Uses TI (Title), AB (Abstract), and SU (Subjects — includes author
+    keywords + APA Thesaurus controlled subject headings).  Date filter
+    via PY year range.
+
+    This query is NOT executed automatically (no EBSCO REST API exists).
+    It is written to queries.json / queries.txt for manual search and
+    export from the EBSCOhost web UI.
+    """
+    config = _active_term_config()
+    fnd = _build_ebsco_tiabsu_block(config.block_a)
+    imag = _build_ebsco_tiabsu_block(config.block_b)
+    if SEARCH_MODE == "os_validation":
+        imag = (
+            f'{imag} OR '
+            f'(TI (magnetic AND resonance AND imaging) '
+            f'OR AB (magnetic AND resonance AND imaging) '
+            f'OR SU (magnetic AND resonance AND imaging))'
+        )
+    year_range = _date_filter_year_range().replace(" TO ", "-")
+    date_part = f" AND PY {year_range}"
+    no_lang_modes = {"os_table_recall", "ludwig_validation"}
+    lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LA English"
+    query = f"({fnd}) AND ({imag})"
+    if config.block_c:
+        design = _build_ebsco_tiabsu_block(config.block_c)
+        query += f" AND ({design})"
+    return f"{query}{lang_part}{date_part}"
 
 
 def build_scopus_query() -> str:
@@ -1276,7 +1320,10 @@ def export_results(records: list[Record], all_records_by_db: dict[str, list[Reco
             if SEARCH_START_YEAR else f"inception to {SEARCH_END_DATE}"
         ),
         "databases_searched": list(queries.keys()),
-        "databases_not_automated": ["PsycINFO (searched manually via OVID/EBSCOhost)"],
+        "databases_not_automated": [
+            "APA PsycInfo / PsycArticles (EBSCOhost) — query in ebsco_psycinfo;",
+            "export manually from web UI with date filter applied"
+        ],
         "queries": queries,
         "records_per_database": per_db_counts,
         "deduplication": dedup_stats,
@@ -1322,10 +1369,11 @@ def main() -> None:
         log.warning("NCBI_EMAIL not set — update Entrez.email or set NCBI_EMAIL env var")
 
     queries = {
-        "pubmed":    build_pubmed_query(),
-        "europepmc": build_europepmc_query(),
-        "wos":       build_wos_query(),
-        "scopus":    build_scopus_query(),
+        "pubmed":         build_pubmed_query(),
+        "europepmc":      build_europepmc_query(),
+        "wos":            build_wos_query(),
+        "scopus":         build_scopus_query(),
+        "ebsco_psycinfo": build_ebsco_psycinfo_query(),
     }
 
     with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
