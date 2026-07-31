@@ -196,7 +196,12 @@ def _strip_control_chars(text: str) -> str:
 
 def extract_json_object(text: str) -> dict[str, Any]:
     text = _strip_control_chars(text)
-    start = text.rfind("{")
+    # Use the FIRST "{" and LAST "}" to bound the outer JSON object. Using
+    # rfind for both (the previous behavior) breaks whenever a literal "{"
+    # appears inside a string field (e.g. reasoning text quoting braces),
+    # since rfind("{") would then point at that inner brace instead of the
+    # object's real opening brace.
+    start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
         try:

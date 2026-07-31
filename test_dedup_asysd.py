@@ -254,6 +254,49 @@ def test_doi_match_different_title():
     assert stats["unique"] == 2
     assert len(maybe) >= 1
 
+def test_protected_ids_block_truncated_title_auto_merge():
+    """Regression test for the retest-corpus bug: a truncated title vs. the
+    full title scores HIGH on Jaro-Winkler (prefix bonus) even though an
+    upstream Jaccard-based conflict check flagged the pair as a gross title
+    conflict. Without protection, ASySD auto-merges them anyway; with
+    protection, the pair must be demoted to maybe_pairs and both records
+    must survive as separate rows.
+    """
+    recs = [
+        _make_record("pm1", "Practical Overview of", doi="10.1148/rg.230133",
+                     source="pubmed", abstract=""),
+        _make_record("wos1",
+                     "Practical Overview of 123I-Ioflupane Imaging in "
+                     "Parkinsonian Syndromes",
+                     doi="10.1148/rg.230133", source="wos",
+                     abstract="Full abstract text about the study."),
+    ]
+    # Sanity check: without protection this pair auto-merges (the bug).
+    unique_unprotected, stats_unprotected, _ = deduplicate_asysd(recs)
+    assert stats_unprotected["unique"] == 1
+
+    unique, stats, maybe = deduplicate_asysd(recs, protected_ids={"pm1", "wos1"})
+    assert stats["unique"] == 2
+    assert any(
+        {p["record_id1"], p["record_id2"]} == {"pm1", "wos1"} for p in maybe
+    )
+
+
+def test_protected_ids_do_not_affect_unrelated_pairs():
+    """protected_ids should only demote pairs that actually touch a
+    protected record; unrelated true duplicates still merge normally."""
+    recs = [
+        _make_record("pm1", "Functional neurological disorder and trauma",
+                     doi="10.5678/fnd", source="pubmed"),
+        _make_record("sc1", "Functional neurological disorder and trauma",
+                     doi="10.5678/fnd", source="scopus"),
+        _make_record("wos1", "Some unrelated conflicted title here",
+                     doi="10.9999/other", source="wos"),
+    ]
+    unique, stats, _ = deduplicate_asysd(recs, protected_ids={"wos1"})
+    assert stats["unique"] == 2  # fnd pair merged, wos1 stands alone
+
+
 def test_cross_database_duplicate():
     """Same paper from PubMed and Scopus should be deduplicated."""
     recs = [

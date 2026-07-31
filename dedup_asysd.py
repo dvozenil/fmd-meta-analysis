@@ -475,13 +475,30 @@ def _is_true_match(p: PairData) -> bool:
     return any(rules)
 
 
-def identify_true_matches(pairs: list[PairData]) -> tuple[list[PairData], list[PairData]]:
+def identify_true_matches(
+    pairs: list[PairData],
+    protected_ids: set[str] | None = None,
+) -> tuple[list[PairData], list[PairData]]:
     """Port of R's identify_true_matches().
+
+    Parameters
+    ----------
+    protected_ids : set[str] | None
+        Record ids that an upstream stage has already flagged as belonging
+        to a gross DOI/title conflict (e.g. the exact-DOI collapse in
+        ``fnd_meta_search.py``, which uses a different similarity metric
+        than the in-ASySD Jaro-Winkler check below). Any pair touching a
+        protected id is always demoted to ``maybe_pairs`` regardless of
+        which rule matched it as "true" — this prevents ASySD from
+        silently re-merging records that were quarantined for manual
+        review upstream.
 
     Returns (true_pairs, maybe_pairs) where:
       - true_pairs are confident duplicates (after all filters)
       - maybe_pairs need manual review
     """
+    protected_ids = protected_ids or set()
+
     # Step 1: Apply threshold rules
     true_pairs = [p for p in pairs if _is_true_match(p)]
 
@@ -493,6 +510,8 @@ def identify_true_matches(pairs: list[PairData]) -> tuple[list[PairData], list[P
     for p in true_pairs:
         if (p.doi >= 1.0 and p.title1 and p.title2 and p.title < 0.6
                 and len(p.title1) >= 15 and len(p.title2) >= 15):
+            doi_title_conflicts.append(p)
+        elif p.record_id1 in protected_ids or p.record_id2 in protected_ids:
             doi_title_conflicts.append(p)
         else:
             kept_true.append(p)
@@ -654,6 +673,7 @@ def generate_dup_id(true_pairs: list[PairData],
 def deduplicate_asysd(
     records: list[dict],
     keep_source: str | None = None,
+    protected_ids: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, int], list[dict]]:
     """ASySD-class deduplication.
 
@@ -667,6 +687,11 @@ def deduplicate_asysd(
     keep_source : str | None
         If set, preferentially keep records from this source as the
         representative in each duplicate group.
+    protected_ids : set[str] | None
+        Record ids quarantined by an upstream conflict check (see
+        ``identify_true_matches``). Pairs touching these ids are never
+        auto-merged as "true" duplicates; they are demoted to
+        ``maybe_pairs`` for manual review instead.
 
     Returns
     -------
@@ -705,7 +730,7 @@ def deduplicate_asysd(
 
     # Step 4: Identify true and maybe matches
     log.info("ASySD: identifying true matches...")
-    true_pairs, maybe_pairs = identify_true_matches(pair_data)
+    true_pairs, maybe_pairs = identify_true_matches(pair_data, protected_ids=protected_ids)
     log.info(f"ASySD: {len(true_pairs)} true duplicate pairs, "
              f"{len(maybe_pairs)} maybe pairs for manual review")
 

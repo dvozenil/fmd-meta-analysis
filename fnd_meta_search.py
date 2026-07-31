@@ -41,6 +41,7 @@ Repository: https://github.com/dvozenil/fmd-meta-analysis
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -1294,9 +1295,17 @@ class ScopusClient:
 
         # Authors: COMPLETE view returns an ``author`` array with authname;
         # STANDARD view returns only ``dc:creator`` (first author string).
+        # Scopus sometimes returns a single-author "author" field as a bare
+        # dict instead of a list-of-dicts; normalize before iterating or
+        # ``a.get(...)`` below throws AttributeError on dict keys (strings).
         author_list = e.get("author", [])
+        if isinstance(author_list, dict):
+            author_list = [author_list]
         if author_list:
-            authors = [a.get("authname", "") for a in author_list if a.get("authname")]
+            authors = [
+                a.get("authname", "") for a in author_list
+                if isinstance(a, dict) and a.get("authname")
+            ]
         else:
             dc_creator = e.get("dc:creator", "")
             authors = [dc_creator] if dc_creator else []
@@ -1676,7 +1685,15 @@ def _merge_record_fields(keeper: Record, donors: list[Record]) -> Record:
         if len((keeper.title or "").strip()) < max(20, len((d.title or "").strip()) // 2):
             if (d.title or "").strip():
                 keeper.title = d.title
-        if not (keeper.abstract or "").strip() and (d.abstract or "").strip():
+        # Upgrade, not just fill: a short/truncated abstract should lose to
+        # a substantially longer one from a sibling, not just an empty one
+        # (previously only fired when keeper.abstract was empty, which let
+        # a heavily truncated abstract "win" over full-length siblings).
+        keeper_abstract = (keeper.abstract or "").strip()
+        donor_abstract = (d.abstract or "").strip()
+        if donor_abstract and (
+            not keeper_abstract or len(keeper_abstract) < len(donor_abstract) // 2
+        ):
             keeper.abstract = d.abstract
         if not keeper.authors and d.authors:
             keeper.authors = list(d.authors)
@@ -1695,10 +1712,16 @@ def _merge_record_fields(keeper: Record, donors: list[Record]) -> Record:
 
 def _collapse_exact_dois(
     records: list[Record],
-) -> tuple[list[Record], dict[str, int], list[dict]]:
+) -> tuple[list[Record], dict[str, int], list[dict], set[str]]:
     """Deterministic exact-DOI merge before fuzzy ASySD matching.
 
-    Returns (collapsed_records, stats, doi_title_conflicts).
+    Returns (collapsed_records, stats, doi_title_conflicts, protected_ids).
+
+    ``protected_ids`` are namespaced ``source_db:source_id`` identifiers for
+    every record in a DOI group with a gross title conflict. Downstream
+    fuzzy matching (ASySD) must treat these as quarantined — never silently
+    auto-merge them — since they need human review (same-paper metadata
+    variant, erratum/original pair, or a genuine DOI collision).
     """
     by_doi: dict[str, list[Record]] = {}
     no_doi: list[Record] = []
@@ -1718,6 +1741,7 @@ def _collapse_exact_dois(
         by_doi.setdefault(norm, []).append(r)
 
     conflicts: list[dict] = []
+    protected_ids: set[str] = set()
     collapsed: list[Record] = list(no_doi)
     merged_groups = 0
     records_removed = 0
@@ -1734,15 +1758,20 @@ def _collapse_exact_dois(
                 t1, t2 = titled[i][1], titled[j][1]
                 if len(t1) >= 20 and len(t2) >= 20 and _title_token_jaccard(t1, t2) < 0.4:
                     conflict = True
+                    g1, g2 = titled[i][0], titled[j][0]
                     conflicts.append({
                         "doi": doi,
                         "title1": t1[:120],
                         "title2": t2[:120],
-                        "source1": titled[i][0].source_db,
-                        "source2": titled[j][0].source_db,
+                        "source_db1": g1.source_db,
+                        "source_id1": g1.source_id,
+                        "source_db2": g2.source_db,
+                        "source_id2": g2.source_id,
                     })
         if conflict:
             collapsed.extend(group)
+            for g in group:
+                protected_ids.add(_namespaced_id(g.source_db, g.source_id))
             continue
         best = max(group, key=_record_completeness)
         best = _merge_record_fields(best, group)
@@ -1758,10 +1787,11 @@ def _collapse_exact_dois(
     }
     log.info(
         f"Exact-DOI collapse: {merged_groups} groups merged "
-        f"(-{records_removed} records), {len(conflicts)} title conflicts kept separate, "
+        f"(-{records_removed} records), {len(conflicts)} title conflicts kept separate "
+        f"({len(protected_ids)} records protected from further auto-merge), "
         f"{invalid_cleared} invalid DOIs cleared"
     )
-    return collapsed, stats, conflicts
+    return collapsed, stats, conflicts, protected_ids
 
 
 def _collect_all_sources(search_dir: Path) -> tuple[list[Record], dict[str, list[Record]], dict[str, int]]:
@@ -1874,7 +1904,8 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
     exact_doi_stats: dict[str, int] = {}
 
     # Deterministic exact-DOI merge before fuzzy matching
-    all_records, exact_doi_stats, doi_conflicts = _collapse_exact_dois(all_records)
+    all_records, exact_doi_stats, doi_conflicts, protected_ids = _collapse_exact_dois(all_records)
+    conflicted_dois = {row["doi"] for row in doi_conflicts}
     if doi_conflicts:
         conflict_path = search_dir / "doi_title_conflicts.csv"
         with open(conflict_path, "w", newline="", encoding="utf-8") as f:
@@ -1890,6 +1921,7 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
         # collide as graph nodes.
         asysd_input = []
         record_by_id: dict[str, Record] = {}
+        asysd_protected_ids: set[str] = set()
         for r in all_records:
             base_rid = _namespaced_id(r.source_db, r.source_id)
             rid = base_rid
@@ -1898,6 +1930,8 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
                 rid = f"{base_rid}#{n}"
                 n += 1
             record_by_id[rid] = r
+            if base_rid in protected_ids:
+                asysd_protected_ids.add(rid)
             title_norm = " ".join(r.title.replace("-", " ").split())
             abstract_norm = (
                 " ".join(r.abstract.replace("-", " ").split()) if r.abstract else ""
@@ -1922,7 +1956,7 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
             })
 
         asysd_unique, asysd_stats, maybe_pairs_data = deduplicate_asysd(
-            asysd_input, keep_source="pubmed"
+            asysd_input, keep_source="pubmed", protected_ids=asysd_protected_ids
         )
 
         deduped: list[Record] = []
@@ -1955,6 +1989,8 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
 
         # Fill truncated/missing fields from same-DOI siblings in the
         # post-exact-DOI pool (helps PubMed titles truncated in stored CSV).
+        # Skip DOIs quarantined as title conflicts: those siblings are kept
+        # separate on purpose and must not bleed fields into each other.
         by_doi: dict[str, list[Record]] = {}
         for r in all_records:
             d = _normalize_doi(r.doi)
@@ -1962,7 +1998,7 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
                 by_doi.setdefault(d, []).append(r)
         for survivor in deduped:
             d = _normalize_doi(survivor.doi)
-            if d and d in by_doi:
+            if d and d in by_doi and d not in conflicted_dois:
                 _merge_record_fields(survivor, by_doi[d])
 
         dedup_stats = {
@@ -2552,12 +2588,21 @@ def run_dedup(search_dir: Path) -> None:
     else:
         _recover_abstracts(all_records)
 
+    # Snapshot per-db records *before* dedup mutates them in place (exact-DOI
+    # field merging and post-ASySD sibling fill both mutate Record objects
+    # that are shared with all_records_by_db). Without this, the "raw"
+    # per-database audit CSVs would silently pick up cross-database title/
+    # abstract merges from records that happened to become a merge "keeper",
+    # making them unreliable as a record of what each database actually
+    # returned.
+    all_records_by_db_snapshot = copy.deepcopy(all_records_by_db)
+
     # Deduplication
     deduped, dedup_stats = _run_deduplication(all_records, search_dir)
 
     # Export
     export_results(
-        deduped, all_records_by_db, queries, per_db, dedup_stats,
+        deduped, all_records_by_db_snapshot, queries, per_db, dedup_stats,
         output_dir=search_dir,
         search_mode=search_mode,
         search_start_year=search_start_year,
@@ -2613,7 +2658,11 @@ def main() -> None:
         log.info("=" * 60)
         return
 
-    # Default mode: search + dedup + export in one pass
+    # Default mode: search + dedup + export in one pass.
+    # Snapshot per-db records before dedup mutates them in place (see the
+    # matching comment in run_dedup()) so the raw per-database audit CSVs
+    # stay faithful to what each database actually returned.
+    all_records_by_db_snapshot = copy.deepcopy(all_records_by_db)
     deduped, dedup_stats = _run_deduplication(all_records, OUTPUT_DIR)
 
     # Fetch abstracts for deduplicated Scopus-sourced records still missing them.
@@ -2626,7 +2675,7 @@ def main() -> None:
         ScopusClient()._enrich_abstracts(scopus_need_abstract)
 
     export_results(
-        deduped, all_records_by_db, queries, per_db, dedup_stats,
+        deduped, all_records_by_db_snapshot, queries, per_db, dedup_stats,
         output_dir=OUTPUT_DIR,
         search_mode=SEARCH_MODE,
         search_start_year=SEARCH_START_YEAR,
