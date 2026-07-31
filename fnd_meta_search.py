@@ -215,6 +215,17 @@ def retry(max_attempts: int = 3, backoff_base: float = 2.0,
     return decorator
 
 
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and unescape entities (EuropePMC returns HTML in abstracts)."""
+    if not text:
+        return text
+    text = re.sub(r"<[^>]+>", "", text)
+    text = (text.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&amp;", "&").replace("&quot;", '"')
+                .replace("&#39;", "'"))
+    return " ".join(text.split())
+
+
 # ---------------------------------------------------------------------------
 # LAYER 1: QUERY CONSTRUCTION
 # ---------------------------------------------------------------------------
@@ -798,10 +809,20 @@ class PubMedClient:
                 year = int(year_text) if year_text else None
             except ValueError:
                 year = None
+            # Use ELocationID as primary DOI source — ArticleIdList
+            # contains reference DOIs that can shadow the article's own.
             doi = None
-            for aid in art.findall(".//ArticleId"):
-                if aid.attrib.get("IdType") == "doi":
-                    doi = (aid.text or "").strip()
+            for eloc in art.findall(".//ELocationID"):
+                if eloc.attrib.get("EIdType") == "doi":
+                    doi = (eloc.text or "").strip()
+                    break
+            if not doi:
+                # Fall back to first ArticleId doi (not last — the list
+                # includes reference DOIs).
+                for aid in art.findall(".//ArticleId"):
+                    if aid.attrib.get("IdType") == "doi":
+                        doi = (aid.text or "").strip()
+                        break
             authors = [
                 f"{a.findtext('LastName') or ''} {a.findtext('ForeName') or ''}".strip()
                 for a in art.findall(".//Author")
@@ -886,7 +907,7 @@ class EuropePMCClient:
             source_id=h.get("id", ""),
             doi=h.get("doi"),
             title=h.get("title", ""),
-            abstract=h.get("abstractText", ""),
+            abstract=_strip_html(h.get("abstractText", "")),
             authors=[a.strip() for a in (h.get("authorString") or "").split(",") if a.strip()],
             journal=journal.get("title", "") or h.get("journalTitle", "") or "",
             year=year,
@@ -1061,11 +1082,19 @@ class ScopusClient:
         return "STANDARD"
 
     def _enrich_abstracts(self, records: list[Record]) -> None:
-        """Fetch abstracts via Abstract Retrieval API for records missing them."""
+        """Fetch full author lists (and attempt abstracts) via Abstract Retrieval API.
+
+        With the COMPLETE search view, most Scopus records already include
+        ``dc:description`` (abstract). This method primarily fills in the
+        full author list (the search API only returns ``dc:creator`` — first
+        author). Abstract retrieval is attempted for records still missing
+        one, but the hit rate is typically low.
+        """
         need = [r for r in records if not r.abstract and (r.doi or r.source_id)]
         if not need:
             return
-        log.info(f"Scopus: fetching abstracts for {len(need)} records via Abstract Retrieval API")
+        log.info(f"Scopus: enriching {len(need)} records via Abstract Retrieval API "
+                 f"(author lists + abstract attempt)")
 
         view = self._probe_abstract_view()
         if view is None:
@@ -1096,9 +1125,11 @@ class ScopusClient:
                          f"failed={failed})")
             time.sleep(self.ABSTRACT_DELAY)
 
-        log.info(f"Scopus Abstract Retrieval done: {fetched} abstracts, "
+        log.info(f"Scopus enrichment done: {fetched} abstracts, "
                  f"{authors_filled} full author lists, "
-                 f"{failed} unavailable out of {len(need)} attempted")
+                 f"{failed} unavailable out of {len(need)} attempted. "
+                 f"Records still missing abstracts will be handled by "
+                 f"cross-database abstract recovery.")
 
     def _probe_abstract_view(self) -> str | None:
         """Try views in preference order on a known DOI to find one that works."""
@@ -1940,6 +1971,132 @@ def _confirm(prompt: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# ABSTRACT RECOVERY (cross-database, pre-dedup)
+# ---------------------------------------------------------------------------
+
+def _recover_abstracts(records: list[Record]) -> None:
+    """Recover empty abstracts via PubMed efetch, PubMed title search, and EuropePMC.
+
+    Runs after all databases are fetched and Scopus enrichment is done,
+    but BEFORE deduplication so the dedup matcher has maximum text.
+
+    Strategy (in order, first hit wins):
+      1. PubMed efetch by PMID — for PubMed records that came back without
+         an abstract (rare but happens with certain pub-types).
+      2. PubMed title search → efetch — for non-PubMed records (Scopus, WoS,
+         PsycInfo, EuropePMC) whose title can be found in PubMed.
+      3. EuropePMC title search — broader coverage including conference papers.
+    """
+    need = [r for r in records if not r.abstract]
+    if not need:
+        return
+    log.info(f"Abstract recovery: {len(need)} records with empty abstracts. "
+             f"Attempting PubMed + EuropePMC title search...")
+
+    EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    headers = {"User-Agent": "FND-MetaAnalysis-Research/1.0 (academic research)"}
+
+    def _fetch_url(url: str, timeout: int = 15) -> tuple[str, int | None]:
+        try:
+            req = requests.get(url, headers=headers, timeout=timeout)
+            return req.text, req.status_code
+        except requests.RequestException as e:
+            return str(e), None
+
+    def _pubmed_efetch(pmid: str) -> str | None:
+        url = (f"{EUTILS}/efetch.fcgi?db=pubmed&id={pmid}"
+               f"&rettype=abstract&retmode=xml")
+        text, status = _fetch_url(url)
+        if status != 200:
+            return None
+        root = ET.fromstring(text)
+        parts = [e.text or "" for e in root.findall(".//Abstract/AbstractText")]
+        if parts:
+            return _strip_html(" ".join(parts))
+        return None
+
+    def _pubmed_title_search(title: str, year: str | None) -> str | None:
+        query = f'"{title[:200]}"'
+        if year:
+            query += f" AND {year}[pdat]"
+        from urllib.parse import quote
+        url = (f"{EUTILS}/esearch.fcgi?db=pubmed&term={quote(query)}"
+               f"&retmode=json&retmax=3")
+        text, status = _fetch_url(url)
+        if status != 200:
+            return None
+        try:
+            ids = json.loads(text).get("esearchresult", {}).get("idlist", [])
+            if ids:
+                time.sleep(0.35)
+                return _pubmed_efetch(ids[0])
+        except (json.JSONDecodeError, KeyError):
+            pass
+        return None
+
+    def _epmc_title_search(title: str, year: str | None) -> str | None:
+        from urllib.parse import quote
+        query = f'title:"{title[:200]}"'
+        if year:
+            query += f" AND PUB_YEAR:{year}"
+        url = (f"{EPMC}?query={quote(query)}"
+               f"&format=json&pageSize=3&resultType=core")
+        text, status = _fetch_url(url)
+        if status != 200:
+            return None
+        try:
+            results = (json.loads(text)
+                       .get("resultList", {})
+                       .get("result", []))
+            if results:
+                abstract = results[0].get("abstractText", "")
+                if abstract:
+                    return _strip_html(abstract)
+        except (json.JSONDecodeError, KeyError):
+            pass
+        return None
+
+    recovered = 0
+    for i, rec in enumerate(need, 1):
+        abstract = None
+
+        # Strategy 1: PubMed efetch by PMID
+        if rec.source_db == "pubmed" and rec.source_id:
+            abstract = _pubmed_efetch(rec.source_id)
+            if abstract:
+                log.debug(f"  [{i}/{len(need)}] pubmed_efetch: {rec.title[:60]}")
+            time.sleep(0.35)
+
+        # Strategy 2: PubMed title search
+        if not abstract:
+            abstract = _pubmed_title_search(rec.title, str(rec.year) if rec.year else None)
+            if abstract:
+                log.debug(f"  [{i}/{len(need)}] pubmed_title: {rec.title[:60]}")
+            time.sleep(0.35)
+
+        # Strategy 3: EuropePMC title search
+        if not abstract:
+            abstract = _epmc_title_search(rec.title, str(rec.year) if rec.year else None)
+            if abstract:
+                log.debug(f"  [{i}/{len(need)}] europepmc: {rec.title[:60]}")
+            time.sleep(0.5)
+
+        if abstract:
+            rec.abstract = abstract
+            recovered += 1
+        else:
+            log.debug(f"  [{i}/{len(need)}] not found: {rec.title[:60]}")
+
+        if i % 50 == 0:
+            log.info(f"  Abstract recovery progress: {i}/{len(need)} "
+                     f"(recovered={recovered})")
+
+    log.info(f"Abstract recovery done: {recovered}/{len(need)} recovered "
+             f"({100 * recovered / len(need):.0f}%)")
+
+
+# ---------------------------------------------------------------------------
 # PHASE 1: SEARCH
 # ---------------------------------------------------------------------------
 
@@ -2040,6 +2197,9 @@ def run_searches() -> tuple[list[Record], dict[str, list[Record]], dict[str, int
                          f"missing abstracts (full author lists harvested from the same calls)")
                 ScopusClient()._enrich_abstracts(scopus_all)
 
+    # -- Cross-database abstract recovery (pre-dedup) -----------------------
+    _recover_abstracts(all_records)
+
     return all_records, all_records_by_db, per_db, queries
 
 
@@ -2116,6 +2276,9 @@ def run_dedup(search_dir: Path) -> None:
         log.info(f"  {db}: {n} records")
     log.info(f"  TOTAL: {len(all_records)} raw records across {len(per_db)} databases")
     log.info("=" * 60)
+
+    # -- Cross-database abstract recovery (pre-dedup) -----------------------
+    _recover_abstracts(all_records)
 
     # Deduplication
     deduped, dedup_stats = _run_deduplication(all_records, search_dir)

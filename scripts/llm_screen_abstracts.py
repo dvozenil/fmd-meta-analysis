@@ -42,19 +42,25 @@ _DEFAULT_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "neuroi
 
 SYSTEM_PROMPT = """You are screening titles and abstracts for a systematic review/meta-analysis of neuroimaging studies in Functional Neurological Disorder (FND).
 
-Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text.
+Goal: high-sensitivity title/abstract screening. Do not exclude plausible studies just because the abstract omits details that may appear in the full text. False negatives are unrecoverable; false positives cost a 2-minute full-text skim.
 
 Include candidate if the abstract plausibly describes:
 - I1: Human adults with FND/conversion disorder/functional neurological symptom disorder, including motor FND, PNES/functional seizures, functional sensory symptoms, mixed FND, or close legacy terms.
-- I2: A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity.
+- I2: A neuroimaging method relevant to brain structure or function, including fMRI, MRI/sMRI, VBM, cortical thickness, DTI/diffusion, PET, SPECT, resting-state, or connectivity. Any mention of neuroimaging counts, even if it seems clinical-only — let full text determine it.
 - I3: Primary empirical research.
 
 Exclude if clearly:
 - E1: Not FND/conversion/functional neurological symptoms.
-- E2: Not neuroimaging of the brain.
+- E2: Not neuroimaging of the brain (EEG/MEG/fNIRS only do not count).
 - E3: Review/editorial/commentary/protocol only.
-- E4: Animal-only, pediatric-only, or case report only.
+- E4: Animal-only, or pediatric-only.
 - E5: Treatment/social/clinical paper with no neuroimaging data.
+
+Small studies (case reports, n<10): Do NOT exclude. Mark as include_candidate with design_tags containing "case_report". These are acknowledged in a supplementary appendix but not synthesized.
+
+Empty abstracts: If the abstract field is empty, decide based on the title alone. If the title is plausibly in scope (mentions FND/conversion/functional + neuroimaging), mark as include_candidate. If the title is clearly out of scope, exclude with the appropriate reason. Do not attempt to search for the abstract.
+
+Imaging-mention test: If a study mentions imaging only as clinical data (e.g., "MRI normal in X% of patients"), still include as include_candidate — the full text will determine whether there is a research-imaging component. Exclude for wrong_modality only if the study is clearly about something else and imaging is incidental.
 
 For every response, populate inclusion_criteria_applied with the IDs (I1, I2, I3) of inclusion criteria the study appears to meet, and exclusion_criteria_applied with the IDs (E1–E5) of exclusion criteria that clearly apply. If none apply, use an empty array [].
 
@@ -69,7 +75,7 @@ Return exactly one JSON object with this schema:
   "decision": "include_candidate | exclude | unclear",
   "confidence": 0.0,
   "reason": "short rationale",
-  "exclusion_reason": "wrong_population | wrong_modality | not_primary_research | pediatric_only | case_report | no_human_data | not_fnd | other | null",
+  "exclusion_reason": "not_fnd | wrong_modality | not_primary_research | pediatric_only | case_report | no_human_data | other | null",
   "inclusion_criteria_applied": ["I1", "I2", "I3"],
   "exclusion_criteria_applied": ["E1", "E2", "E3", "E4", "E5"],
   "modality_tags": ["fMRI | sMRI | VBM | PET | SPECT | DTI | resting_state | connectivity | EEG | other"],
@@ -92,13 +98,12 @@ def _load_prompt(prompt_path: Path | None) -> str:
 ALLOWED_VALUES = {
     "decision": {"include_candidate", "exclude", "unclear"},
     "exclusion_reason": {
-        "wrong_population",
+        "not_fnd",
         "wrong_modality",
         "not_primary_research",
         "pediatric_only",
         "case_report",
         "no_human_data",
-        "not_fnd",
         "other",
         None,
     },
