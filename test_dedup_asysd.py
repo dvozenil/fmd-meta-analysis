@@ -244,17 +244,15 @@ def test_no_duplicates():
     assert stats["duplicates_removed"] == 0
 
 def test_doi_match_different_title():
-    """Same DOI but very different titles should NOT be merged
-    (DOI mismatch filter)."""
+    """Same DOI but very different titles should NOT auto-merge
+    (quarantined as DOI/title conflict → maybe_pairs)."""
     recs = [
         _make_record("1", "Brain imaging in FND", doi="10.1234/test"),
         _make_record("2", "Completely different topic here", doi="10.1234/test"),
     ]
-    unique, stats, _ = deduplicate_asysd(recs)
-    # With same DOI but different titles, the DOI similarity would be high
-    # but title/abstract similarity would be low, so no rule fires.
-    # Both should be kept.
+    unique, stats, maybe = deduplicate_asysd(recs)
     assert stats["unique"] == 2
+    assert len(maybe) >= 1
 
 def test_cross_database_duplicate():
     """Same paper from PubMed and Scopus should be deduplicated."""
@@ -268,15 +266,50 @@ def test_cross_database_duplicate():
     assert stats["unique"] == 1
 
 def test_keep_source_preference():
-    """When keep_source is set, the representative should be from that source."""
+    """When keep_source is set, the representative should be from that source
+    when completeness is otherwise equal."""
     recs = [
         _make_record("pm1", "Functional neurological disorder and trauma",
-                     doi="10.5678/fnd", source="pubmed"),
+                     doi="10.5678/fnd", source="pubmed",
+                     abstract="An abstract about testing"),
         _make_record("sc1", "Functional neurological disorder and trauma",
-                     doi="10.5678/fnd", source="scopus"),
+                     doi="10.5678/fnd", source="scopus",
+                     abstract="An abstract about testing"),
     ]
     unique, _, _ = deduplicate_asysd(recs, keep_source="pubmed")
     assert unique[0]["source"] == "pubmed"
+
+
+def test_prefer_complete_abstract():
+    """Records with abstracts should be preferred over empty-abstract copies."""
+    recs = [
+        _make_record("sc1", "Same title neuroimaging FND",
+                     doi="10.2/b", source="scopus", abstract=""),
+        _make_record("pm1", "Same title neuroimaging FND",
+                     doi="10.2/b", source="pubmed",
+                     abstract="A substantial abstract that should be preferred."),
+    ]
+    unique, _, _ = deduplicate_asysd(recs, keep_source="pubmed")
+    assert len(unique) == 1
+    assert unique[0]["source"] == "pubmed"
+    assert unique[0]["abstract"]
+
+
+def test_exact_doi_match_despite_title_truncation():
+    """Exact DOI should merge even when one title is truncated."""
+    recs = [
+        _make_record("pm1", "Effects of ", doi="10.1136/jnnp-2019-322636",
+                     source="pubmed", abstract=""),
+        _make_record("sc1",
+                     "Effects of TPH2 gene variation and childhood trauma on "
+                     "the clinical and circuit-level phenotype of functional "
+                     "neurological disorder",
+                     doi="10.1136/jnnp-2019-322636", source="scopus",
+                     abstract="Full abstract text about the study."),
+    ]
+    unique, stats, _ = deduplicate_asysd(recs)
+    assert stats["unique"] == 1
+    assert unique[0]["abstract"]
 
 def test_three_way_duplicate():
     """Three copies of the same paper should collapse to 1."""

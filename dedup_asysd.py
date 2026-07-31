@@ -83,7 +83,11 @@ def _normalize_author(author: str | None) -> str | None:
 
 
 def _clean_doi(doi: str | None) -> str | None:
-    """Port of format_citations DOI cleaning."""
+    """Port of format_citations DOI cleaning, plus basic validity check.
+
+    Rejects values that do not look like DOIs after cleaning (e.g. bare
+    ``232``), so they cannot create false exact-DOI matches.
+    """
     if doi is None or str(doi).strip() == "" or str(doi).strip() == "NA":
         return None
     d = str(doi).upper()
@@ -95,7 +99,7 @@ def _clean_doi(doi: str | None) -> str | None:
             d = d[len(prefix):]
     d = d.replace("DOI: ", "").replace("DOI:", "").replace("DOI", "")
     d = d.strip()
-    if d == "":
+    if d == "" or not d.startswith("10."):
         return None
     return d
 
@@ -198,19 +202,36 @@ def format_citations(records: list[dict]) -> list[dict]:
     return formatted
 
 
-def order_citations(records: list[dict]) -> list[dict]:
-    """Port of R's order_citations() — sort by (abstract, year) so that
-    records with abstracts and newer years come last (preferred for keeping).
+def order_citations(records: list[dict],
+                    keep_source: str | None = None) -> list[dict]:
+    """Order records so the *first* row in each duplicate group is preferred.
 
-    R uses arrange(abstract, year) which sorts ascending; the *first* row
-    in each duplicate group is the one kept.  We replicate that ordering.
+    ASySD's R code sorts ascending and keeps ``slice_head()`` (first).  The
+    original port treated empty abstracts as preferred, which systematically
+    discarded complete records.  We instead prefer:
+
+      1. non-empty abstract
+      2. ``keep_source`` (e.g. pubmed) when set
+      3. longer abstract / longer title (completeness)
+      4. newer year
     """
     def sort_key(r: dict) -> tuple:
-        # R's arrange(abstract, year) — ascending on both.
-        # NA/None sorts first in R (na.last=FALSE by default in arrange).
-        abstract = r.get("abstract") or ""
-        year = r.get("year") or ""
-        return (str(abstract), str(year))
+        abstract = str(r.get("abstract") or "").strip()
+        title = str(r.get("title") or "").strip()
+        year_s = str(r.get("year") or "").strip()
+        try:
+            year_n = int(year_s) if year_s else 0
+        except ValueError:
+            year_n = 0
+        source = r.get("source") or ""
+        return (
+            0 if abstract else 1,                          # has abstract first
+            0 if (keep_source and source == keep_source) else 1,
+            -len(abstract),
+            -len(title),
+            -year_n,
+            str(r.get("record_id") or ""),
+        )
 
     return sorted(records, key=sort_key)
 
@@ -406,6 +427,13 @@ def _is_true_match(p: PairData) -> bool:
 
         (doi > 0.95 and a > 0.75 and t > 0.9),
 
+        # Exact cleaned-DOI match is decisive on its own.  Title/author can
+        # be truncated or formatted differently across databases; requiring
+        # them blocked true cross-DB duplicates (see maybe_pairs same-DOI).
+        # Gross title conflicts are demoted to maybe_pairs in
+        # identify_true_matches.
+        doi >= 1.0,
+
         (t > 0.80 and ab > 0.90 and vol > 0.85 and jnl > 0.65 and a > 0.9),
         (t > 0.90 and ab > 0.80 and vol > 0.85 and jnl > 0.65 and a > 0.9),
 
@@ -456,6 +484,19 @@ def identify_true_matches(pairs: list[PairData]) -> tuple[list[PairData], list[P
     """
     # Step 1: Apply threshold rules
     true_pairs = [p for p in pairs if _is_true_match(p)]
+
+    # Step 1b: Exact-DOI pairs with grossly conflicting titles → maybe, not true.
+    # Protects against rare DOI metadata errors while still auto-merging the
+    # common case (same paper, truncated/HTML-differing titles).
+    doi_title_conflicts: list[PairData] = []
+    kept_true: list[PairData] = []
+    for p in true_pairs:
+        if (p.doi >= 1.0 and p.title1 and p.title2 and p.title < 0.6
+                and len(p.title1) >= 15 and len(p.title2) >= 15):
+            doi_title_conflicts.append(p)
+        else:
+            kept_true.append(p)
+    true_pairs = kept_true
 
     # Step 2: DOI mismatch filter (lines 368-374)
     # Find true_pairs with low matching DOIs (not NA, not 0, not >0.99)
@@ -520,6 +561,9 @@ def identify_true_matches(pairs: list[PairData]) -> tuple[list[PairData], list[P
         if (p.record_id1, p.record_id2) not in {(m.record_id1, m.record_id2) for m in maybe_pairs}:
             maybe_pairs.append(p)
     for p in year_mismatch_major:
+        if (p.record_id1, p.record_id2) not in {(m.record_id1, m.record_id2) for m in maybe_pairs}:
+            maybe_pairs.append(p)
+    for p in doi_title_conflicts:
         if (p.record_id1, p.record_id2) not in {(m.record_id1, m.record_id2) for m in maybe_pairs}:
             maybe_pairs.append(p)
 
@@ -636,7 +680,7 @@ def deduplicate_asysd(
 
     # Step 1: Order and format citations
     log.info(f"ASySD: formatting {len(records)} records...")
-    ordered = order_citations(records)
+    ordered = order_citations(records, keep_source=keep_source)
     formatted = format_citations(ordered)
 
     # Step 2: Generate candidate pairs via blocking
