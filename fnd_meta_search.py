@@ -226,10 +226,10 @@ def _strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities (EuropePMC returns HTML in abstracts)."""
     if not text:
         return text
-    text = re.sub(r"<[^>]+>", "", text)
     text = (text.replace("&lt;", "<").replace("&gt;", ">")
                 .replace("&amp;", "&").replace("&quot;", '"')
                 .replace("&#39;", "'"))
+    text = re.sub(r"<[^>]+>", "", text)
     return " ".join(text.split())
 
 
