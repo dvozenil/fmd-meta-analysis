@@ -72,27 +72,37 @@ PI: Petr Sojka. Student lead: David Voženílek.
 - Screening model output must be valid JSON matching the schema in the prompt.
   Parse failures are treated as "include" (safe default).
 
-## Current state (2026-07-31)
+## Current state (2026-07-31 corpus, erratum-fix re-run 2026-08-05)
 
 - **Production search + dedup (candidate screening corpus):**
-  `fnd_search_20260731_193704_retest/` — `--full` mode, 5 databases,
-  **7,088 raw → 3,551 unique** after exact-DOI collapse + ASySD.
-  PsycINFO (EBSCO, 488) and WoS (3× `savedrecs*.ris`, 2,065, labeled `wos`)
-  imported manually. Original unrepaired export kept at
-  `fnd_search_20260731_193704/` for audit.
+  `fnd_search_20260731_193704_retest2_fixed/` — `--dedup` on the round-2
+  cleaned raw CSVs (5 databases, 7,088 raw) with the erratum/corrigendum fix
+  applied → **7,088 raw → 3,562 unique** after exact-DOI collapse + ASySD.
+  PsycINFO (EBSCO, 488) and WoS (`savedrecs*.ris`, 2,065, labeled `wos`)
+  imported manually. Import `records_deduplicated.ris` into Rayyan/ASReview.
 - **Dedup hardening (branch `pipeline-v2-doi-fix-abstract-recovery`):**
   namespaced record IDs, exact-DOI merge, complete-record survivor preference,
   PubMed nested-XML title/abstract fix, EuropePMC title HTML strip, WoS
-  `savedrecs*` → `wos`, gated abstract recovery, PRISMA arithmetic asserts.
-  Verified: gap=0, no exact-DOI leftovers in export, no empty-kept-when-full.
-- **12 DOI/title conflicts** in `doi_title_conflicts.csv` (mostly truncated
-  PubMed markup vs full titles, plus 1 Spanish/English pair and 1 erratum) —
-  review before freezing screening start.
-- **100 maybe-pairs** remain (fuzzy-only; **0 same-DOI**). Spot-check before
-  screening if desired; not blocking.
-- **476 records (13.4%) missing abstracts** in the retest export (re-dedup
-  used `--skip-abstract-recovery`). Re-run `--dedup` *without* that flag to
-  recover more from WoS empties, or screen by title / full text as needed.
+  `savedrecs*` → `wos`, gated abstract recovery, **erratum/corrigendum/
+  retraction title detection** (recovers the original article and the PPPD
+  original that were being merged/silently collapsed behind erratum stubs),
+  PRISMA arithmetic asserts. Verified: gap=0, no exact-DOI leftovers in
+  export, no empty-kept-when-full.
+- **7 DOI/title conflicts** in `doi_title_conflicts.csv`:
+  **2 `title_jaccard`** (human review — COVID-19 vaccine EN/ES pair, S2k
+  guideline full/abridged pair) and **5 `doi_erratum`** (auto-kept-apart:
+  PPPD original + its "Correction to:" notice; s108173 conversion-disorder
+  erratum↔original; pmip fMRI erratum↔original; one `RETRACTED:` notice; and
+  one **false-positive group** `10.1080/09593985.2024.2316309` where the
+  medical "correction of hallux valgus" title is not an erratum — accepted
+  noise). Review before freezing screening start.
+- **123 maybe-pairs** in `maybe_pairs.csv` (was 104 pre-fix). 6 tagged
+  `conflict_type=doi_erratum` (including the spurious hallux-valgus group,
+  `""`); 41 WoS `GRANTS:`, 6 `PQDT:`, 6 `BCI:`, 8 `MEDLINE:`, 96 identical
+  title_sim=1.0, 27 non-identical. Spot-check before screening; not blocking.
+- **461/3,562 (12.9%) missing abstracts** (re-dedup used `--skip-abstract-
+  recovery`). Re-run `--dedup` *without* that flag to recover more from WoS
+  empties, or screen by title / full text as needed.
 - **Boeckle validation complete:** 25/25 sensitivity.
 - **Ludwig cross-validation complete:** 15/15 = 100% sensitivity.
 - **Criteria-ID traceability** and thread-safe output implemented.
@@ -100,12 +110,14 @@ PI: Petr Sojka. Student lead: David Voženílek.
 
 ## What's next
 
-1. **Review `doi_title_conflicts.csv`** (12 rows) — confirm auto-kept-apart
-   cases (errata / language / true DOI collisions) are acceptable.
-2. **Optional:** re-dedup without `--skip-abstract-recovery` to shrink missing
-   abstracts, then freeze the folder as the screening corpus.
+1. **Review `doi_title_conflicts.csv`** (7 rows) — confirm the auto-kept-apart
+   `doi_erratum` cases (incl. the accepted false-positive group) and the 2
+   `title_jaccard` language/abridgment calls are acceptable.
+2. **Optional:** re-dedup the `_fixed` folder *without* `--skip-abstract-
+   recovery` to shrink missing abstracts, then freeze it as the screening
+   corpus.
 3. **Begin title/abstract screening** — human + LLM dual screening on the
-   3,551 deduplicated records.
+   3,562 deduplicated records.
 4. **Handle missing abstracts** — screen by title; retrieve full text for
    ambiguous cases.
 5. **Methods paper model runs** (if pursued): add WMCC metrics, run model
