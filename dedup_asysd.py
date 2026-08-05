@@ -59,6 +59,35 @@ def _jw(a: str | None, b: str | None) -> float:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# ERRATUM / CORRECTION DETECTION
+# ════════════════════════════════════════════════════════════════════════════
+
+# Match erratum/correction markers anywhere in the title (word-boundary),
+# not just as a prefix.  This catches titles like:
+#   "Erratum: Uncovering the etiology..."     (prefix — common in WoS/Scopus)
+#   "...functional neuroimaging" Corrigendum   (suffix — common in PsycINFO)
+_ERRATUM_TITLE_RE = re.compile(
+    r"\b(?:erratum|errata|correction|corrigendum|corrigenda|"
+    r"retract|retracted|retraction|retractions|withdrawal)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_erratum_title(title: str | None) -> bool:
+    """True if a title marks a correction/erratum/retraction record.
+
+    Used to demote exact-DOI pairs where exactly one side is an erratum:
+    those pairs share a DOI but represent distinct publications (the
+    original article and the notice about it), and silently merging
+    them drops the original article behind an erratum stub during
+    screening.
+    """
+    if title is None:
+        return False
+    return bool(_ERRATUM_TITLE_RE.search(str(title)))
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # FORMATTING / NORMALIZATION  (port of format_citations + order_citations)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -505,9 +534,23 @@ def identify_true_matches(
     # Step 1b: Exact-DOI pairs with grossly conflicting titles → maybe, not true.
     # Protects against rare DOI metadata errors while still auto-merging the
     # common case (same paper, truncated/HTML-differing titles).
+    #
+    # Erratum-titled exact matches are also demoted, but for a different
+    # reason: an erratum/correction/retraction is a *distinct publication*
+    # sharing the DOI with the original article.  Merging them hides the
+    # original behind the erratum stub at screening time.  Route them to
+    # maybe(pairs) so a human can decide pair-by-pair.
     doi_title_conflicts: list[PairData] = []
     kept_true: list[PairData] = []
     for p in true_pairs:
+        if p.doi >= 1.0:
+            t1_err = _is_erratum_title(p.title1)
+            t2_err = _is_erratum_title(p.title2)
+            if t1_err != t2_err:
+                # Exactly one side is erratum — demote regardless of title
+                # similarity, because they are distinct publications.
+                doi_title_conflicts.append(p)
+                continue
         if (p.doi >= 1.0 and p.title1 and p.title2 and p.title < 0.6
                 and len(p.title1) >= 15 and len(p.title2) >= 15):
             doi_title_conflicts.append(p)
@@ -619,6 +662,33 @@ def generate_dup_id(true_pairs: list[PairData],
 
     # Get connected components
     components = list(nx.connected_components(g))
+
+    # ── Defensive erratum logging ───────────────────────────────────────
+    # If a component contains BOTH erratum-titled and non-erratum-titled
+    # records, log it for audit.  This should be rare after Layer A
+    # (pairwise demotion in identify_true_matches), but can still occur
+    # via transitive closure through non-DOI rules.  We do NOT split
+    # the component here — Layer A handles the pairwise case, and
+    # production's _collapse_exact_dois handles same-DOI erratum groups.
+    rid_to_record_for_log: dict[str, dict] = {}
+    for rec in formatted:
+        rid = rec["record_id"]
+        rid_to_record_for_log[rid] = rec
+
+    for members in components:
+        member_list = list(members)
+        erratum_members = {m for m in member_list
+                           if _is_erratum_title(
+                               rid_to_record_for_log.get(m, {}).get("title"))}
+        original_members = set(member_list) - erratum_members
+        if erratum_members and original_members:
+            log.warning(
+                "erratum-containing component: %d originals, %d errata "
+                "(records: originals=%s, errata=%s)",
+                len(original_members), len(erratum_members),
+                sorted(original_members)[:5],
+                sorted(erratum_members)[:5],
+            )
 
     # Map record_id → component_id (1-based)
     record_to_component: dict[str, int] = {}
@@ -772,6 +842,12 @@ def deduplicate_asysd(
             "abstract_sim": round(p.abstract, 4),
             "doi_sim": round(p.doi, 4),
             "journal_sim": round(p.journal, 4),
+            "conflict_type": (
+                "doi_erratum" if (
+                    p.doi >= 1.0
+                    and _is_erratum_title(p.title1) != _is_erratum_title(p.title2)
+                ) else ""
+            ),
         }
         for p in maybe_pairs
     ]

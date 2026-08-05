@@ -281,6 +281,24 @@ def _title_token_jaccard(a: str, b: str) -> float:
     return len(w1 & w2) / len(w1 | w2)
 
 
+# Erratum / correction marker detection — matches anywhere in the title
+# (word-boundary), not just as a prefix.  This catches both:
+#   "Erratum: Uncovering the etiology..."     (prefix — WoS/Scopus)
+#   "...neuroimaging" Corrigendum             (suffix — PsycINFO)
+_ERRATUM_TITLE_RE = re.compile(
+    r"\b(?:erratum|errata|correction|corrigendum|corrigenda|"
+    r"retract|retracted|retraction|retractions|withdrawal)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_erratum_title(title: str | None) -> bool:
+    """True if a title marks a correction/erratum/retraction record."""
+    if not title or not str(title).strip():
+        return False
+    return bool(_ERRATUM_TITLE_RE.search(str(title)))
+
+
 # ---------------------------------------------------------------------------
 # LAYER 1: QUERY CONSTRUCTION
 # ---------------------------------------------------------------------------
@@ -1750,6 +1768,37 @@ def _collapse_exact_dois(
         if len(group) == 1:
             collapsed.append(group[0])
             continue
+
+        # Erratum / correction detection: if any record in this same-DOI
+        # group has an erratum/correction/corrigendum/retraction marker in
+        # its title, do NOT collapse.  These are distinct publications
+        # (the original article and the notice about it) that happen to
+        # share a DOI.  Collapsing them silently drops the original behind
+        # the erratum stub.  Route to protected_ids so ASySD also treats
+        # them as quarantined (demoted to maybe-pairs).
+        has_erratum = any(_is_erratum_title(g.title) for g in group)
+        if has_erratum:
+            log.info(
+                "erratum/correction group skipped collapse: DOI=%s n=%d titles=%s",
+                doi, len(group), [g.title[:120] for g in group],
+            )
+            collapsed.extend(group)
+            for g in group:
+                protected_ids.add(_namespaced_id(g.source_db, g.source_id))
+            conflicts.append({
+                "doi": doi,
+                "title1": next((g.title[:120] for g in group
+                                if _is_erratum_title(g.title)), ""),
+                "title2": next((g.title[:120] for g in group
+                                if not _is_erratum_title(g.title)), ""),
+                "source_db1": "",
+                "source_id1": "",
+                "source_db2": "",
+                "source_id2": "",
+                "conflict_type": "doi_erratum",
+            })
+            continue
+
         # Gross title conflict → keep all, flag for review
         titled = [(g, g.title.strip()) for g in group if (g.title or "").strip()]
         conflict = False
@@ -1767,6 +1816,7 @@ def _collapse_exact_dois(
                         "source_id1": g1.source_id,
                         "source_db2": g2.source_db,
                         "source_id2": g2.source_id,
+                        "conflict_type": "title_jaccard",
                     })
         if conflict:
             collapsed.extend(group)
