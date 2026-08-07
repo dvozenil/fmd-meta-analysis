@@ -10,5 +10,6 @@ pilot outputs) has been moved to `validation/data/`. See
 
 - Search run outputs are generated into timestamped `fnd_search_*/`
   directories at the repo root (gitignored).
-- Production screening outputs will go here once the production search
-  is finalized.
+- **Production screening corpus (2026-07-31 search): `screening_corpus_2026-07-31/`** —
+  raw exports, queries, PRISMA metadata, and the adjudicated final screening corpus
+  (`records_deduplicated_adjudicated.ris`, 3,472 records). See its `README.md`.
