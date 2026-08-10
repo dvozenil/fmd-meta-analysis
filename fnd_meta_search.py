@@ -41,6 +41,7 @@ Repository: https://github.com/dvozenil/fmd-meta-analysis
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -109,6 +110,11 @@ def _parse_args() -> argparse.Namespace:
         help="Dedup-only mode: load all sources in an existing search directory, "
              "deduplicate, and export final PRISMA artifacts.",
     )
+    parser.add_argument(
+        "--skip-abstract-recovery", action="store_true",
+        help="Skip cross-database abstract recovery (useful when re-deduping "
+             "a folder whose raw CSVs already have recovered abstracts).",
+    )
     return parser.parse_args()
 
 _cli_args = _parse_args()
@@ -116,6 +122,7 @@ AUTO_MODE: bool = _cli_args.auto
 DEDUP_METHOD: str = _cli_args.dedup_algo
 NO_DEDUP: bool = _cli_args.no_dedup
 DEDUP_ONLY_DIR: str | None = _cli_args.dedup_dir
+SKIP_ABSTRACT_RECOVERY: bool = _cli_args.skip_abstract_recovery
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION (conditional on --search vs --dedup mode)
@@ -213,6 +220,83 @@ def retry(max_attempts: int = 3, backoff_base: float = 2.0,
                     time.sleep(wait)
         return wrapper
     return decorator
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and unescape entities (EuropePMC returns HTML in abstracts)."""
+    if not text:
+        return text
+    text = (text.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&amp;", "&").replace("&quot;", '"')
+                .replace("&#39;", "'"))
+    text = re.sub(r"<[^>]+>", "", text)
+    return " ".join(text.split())
+
+
+def _element_text(el: ET.Element | None) -> str:
+    """Full text of an XML element, including nested tag contents.
+
+    ``Element.findtext`` / ``.text`` only return the first text node, so
+    PubMed titles like ``Effects of <i>TPH2</i> gene…`` become ``Effects of ``.
+    """
+    if el is None:
+        return ""
+    return " ".join("".join(el.itertext()).split())
+
+
+def _normalize_doi(doi: str | None) -> str | None:
+    """Normalize a DOI for matching; return None if missing/invalid."""
+    if doi is None:
+        return None
+    d = str(doi).strip()
+    if not d or d.upper() == "NA":
+        return None
+    d_up = d.upper()
+    for prefix in ("HTTPS://DX.DOI.ORG/", "HTTP://DX.DOI.ORG/",
+                   "HTTPS://DOI.ORG/", "HTTP://DOI.ORG/"):
+        if d_up.startswith(prefix):
+            d = d[len(prefix):]
+            d_up = d.upper()
+            break
+    if d_up.startswith("DOI:"):
+        d = d[4:].strip()
+    d = d.strip().lstrip("/").lower()
+    if not d.startswith("10."):
+        return None
+    return d
+
+
+def _namespaced_id(source_db: str, source_id: str) -> str:
+    """Stable cross-database record id for ASySD graph nodes."""
+    return f"{source_db}:{source_id}"
+
+
+def _title_token_jaccard(a: str, b: str) -> float:
+    """Jaccard similarity on alphanumeric tokens of length >= 3."""
+    def words(t: str) -> set[str]:
+        return {w.lower() for w in re.findall(r"[a-zA-Z0-9]{3,}", t or "")}
+    w1, w2 = words(a), words(b)
+    if not w1 or not w2:
+        return 0.0
+    return len(w1 & w2) / len(w1 | w2)
+
+
+# Erratum / correction marker detection — matches anywhere in the title
+# (word-boundary), not just as a prefix.  This catches both:
+#   "Erratum: Uncovering the etiology..."     (prefix — WoS/Scopus)
+#   "...neuroimaging" Corrigendum             (suffix — PsycINFO)
+_ERRATUM_TITLE_RE = re.compile(
+    r"\b(?:erratum|errata|correction|corrigendum|corrigenda|"
+    r"retract|retracted|retraction|retractions|withdrawal)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_erratum_title(title: str | None) -> bool:
+    """True if a title marks a correction/erratum/retraction record."""
+    if not title or not str(title).strip():
+        return False
+    return bool(_ERRATUM_TITLE_RE.search(str(title)))
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +853,15 @@ class PubMedClient:
         webenv, query_key = results["WebEnv"], results["QueryKey"]
         total = int(results["Count"])
         log.info(f"PubMed: {total} hits, retrieving {len(pmids)} records")
+        if total > len(pmids):
+            log.error(
+                f"PubMed returned {total} hits but only {len(pmids)} IDs were "
+                f"retrieved (retmax={retmax}). Raise retmax or paginate; "
+                f"refusing to continue with a truncated result set."
+            )
+            raise RuntimeError(
+                f"PubMed result truncated: {len(pmids)}/{total} IDs retrieved"
+            )
 
         records: list[Record] = []
         batch_size = 200
@@ -788,9 +881,9 @@ class PubMedClient:
         root = ET.fromstring(xml_bytes)
         for art in root.findall(".//PubmedArticle"):
             pmid = art.findtext(".//PMID") or ""
-            title = art.findtext(".//ArticleTitle") or ""
+            title = _element_text(art.find(".//ArticleTitle"))
             abstract = " ".join(
-                (e.text or "") for e in art.findall(".//Abstract/AbstractText")
+                _element_text(e) for e in art.findall(".//Abstract/AbstractText")
             ).strip()
             journal = art.findtext(".//Journal/Title") or ""
             year_text = art.findtext(".//PubDate/Year") or ""
@@ -798,10 +891,20 @@ class PubMedClient:
                 year = int(year_text) if year_text else None
             except ValueError:
                 year = None
+            # Use ELocationID as primary DOI source — ArticleIdList
+            # contains reference DOIs that can shadow the article's own.
             doi = None
-            for aid in art.findall(".//ArticleId"):
-                if aid.attrib.get("IdType") == "doi":
-                    doi = (aid.text or "").strip()
+            for eloc in art.findall(".//ELocationID"):
+                if eloc.attrib.get("EIdType") == "doi":
+                    doi = _normalize_doi(eloc.text)
+                    break
+            if not doi:
+                # Fall back to first ArticleId doi (not last — the list
+                # includes reference DOIs).
+                for aid in art.findall(".//ArticleId"):
+                    if aid.attrib.get("IdType") == "doi":
+                        doi = _normalize_doi(aid.text)
+                        break
             authors = [
                 f"{a.findtext('LastName') or ''} {a.findtext('ForeName') or ''}".strip()
                 for a in art.findall(".//Author")
@@ -884,9 +987,9 @@ class EuropePMCClient:
         return Record(
             source_db="europepmc",
             source_id=h.get("id", ""),
-            doi=h.get("doi"),
-            title=h.get("title", ""),
-            abstract=h.get("abstractText", ""),
+            doi=_normalize_doi(h.get("doi")),
+            title=_strip_html(h.get("title", "")),
+            abstract=_strip_html(h.get("abstractText", "")),
             authors=[a.strip() for a in (h.get("authorString") or "").split(",") if a.strip()],
             journal=journal.get("title", "") or h.get("journalTitle", "") or "",
             year=year,
@@ -957,7 +1060,7 @@ class WebOfScienceClient:
         for ident in rec.get("dynamic_data", {}).get("cluster_related", {}) \
                       .get("identifiers", {}).get("identifier", []):
             if ident.get("type") == "doi":
-                doi = ident.get("value")
+                doi = _normalize_doi(ident.get("value"))
         abstract = ""
         for abst in static_data.get("fullrecord_metadata", {}) \
                                .get("abstracts", {}).get("abstract", []):
@@ -1061,11 +1164,19 @@ class ScopusClient:
         return "STANDARD"
 
     def _enrich_abstracts(self, records: list[Record]) -> None:
-        """Fetch abstracts via Abstract Retrieval API for records missing them."""
+        """Fetch full author lists (and attempt abstracts) via Abstract Retrieval API.
+
+        With the COMPLETE search view, most Scopus records already include
+        ``dc:description`` (abstract). This method primarily fills in the
+        full author list (the search API only returns ``dc:creator`` — first
+        author). Abstract retrieval is attempted for records still missing
+        one, but the hit rate is typically low.
+        """
         need = [r for r in records if not r.abstract and (r.doi or r.source_id)]
         if not need:
             return
-        log.info(f"Scopus: fetching abstracts for {len(need)} records via Abstract Retrieval API")
+        log.info(f"Scopus: enriching {len(need)} records via Abstract Retrieval API "
+                 f"(author lists + abstract attempt)")
 
         view = self._probe_abstract_view()
         if view is None:
@@ -1096,9 +1207,11 @@ class ScopusClient:
                          f"failed={failed})")
             time.sleep(self.ABSTRACT_DELAY)
 
-        log.info(f"Scopus Abstract Retrieval done: {fetched} abstracts, "
+        log.info(f"Scopus enrichment done: {fetched} abstracts, "
                  f"{authors_filled} full author lists, "
-                 f"{failed} unavailable out of {len(need)} attempted")
+                 f"{failed} unavailable out of {len(need)} attempted. "
+                 f"Records still missing abstracts will be handled by "
+                 f"cross-database abstract recovery.")
 
     def _probe_abstract_view(self) -> str | None:
         """Try views in preference order on a known DOI to find one that works."""
@@ -1200,9 +1313,17 @@ class ScopusClient:
 
         # Authors: COMPLETE view returns an ``author`` array with authname;
         # STANDARD view returns only ``dc:creator`` (first author string).
+        # Scopus sometimes returns a single-author "author" field as a bare
+        # dict instead of a list-of-dicts; normalize before iterating or
+        # ``a.get(...)`` below throws AttributeError on dict keys (strings).
         author_list = e.get("author", [])
+        if isinstance(author_list, dict):
+            author_list = [author_list]
         if author_list:
-            authors = [a.get("authname", "") for a in author_list if a.get("authname")]
+            authors = [
+                a.get("authname", "") for a in author_list
+                if isinstance(a, dict) and a.get("authname")
+            ]
         else:
             dc_creator = e.get("dc:creator", "")
             authors = [dc_creator] if dc_creator else []
@@ -1225,7 +1346,7 @@ class ScopusClient:
         return Record(
             source_db="scopus",
             source_id=e.get("dc:identifier", "").replace("SCOPUS_ID:", ""),
-            doi=e.get("prism:doi"),
+            doi=_normalize_doi(e.get("prism:doi")),
             title=e.get("dc:title", ""),
             abstract=e.get("dc:description", ""),
             authors=authors,
@@ -1338,7 +1459,7 @@ def _read_records_csv(path: Path) -> list[Record]:
                 records.append(Record(
                     source_db=row.get("source_db", ""),
                     source_id=row.get("source_id", ""),
-                    doi=row.get("doi") or None,
+                    doi=_normalize_doi(row.get("doi")),
                     title=row.get("title", ""),
                     abstract=row.get("abstract", ""),
                     authors=[a.strip() for a in row.get("authors", "").split("; ") if a.strip()],
@@ -1404,7 +1525,7 @@ def _import_ebsco_csv(path: Path) -> list[Record]:
                 journal = row.get("source", "") or ""
 
                 # DOI
-                doi = row.get("doi") or None
+                doi = _normalize_doi(row.get("doi"))
 
                 # ISSN / ISBN
                 issn = row.get("issns", "") or ""
@@ -1476,7 +1597,7 @@ def _import_ris(path: Path, source_db: str) -> list[Record]:
 
         authors = current.get("AU", [])
         journal = " ".join(current.get("T2", []) or current.get("JO", []))
-        doi = " ".join(current.get("DO", [])).strip() or None
+        doi = _normalize_doi(" ".join(current.get("DO", [])).strip() or None)
         abstract = " ".join(current.get("AB", []))
         keywords = current.get("KW", [])
 
@@ -1496,7 +1617,19 @@ def _import_ris(path: Path, source_db: str) -> list[Record]:
         url = " ".join(current.get("UR", []))
         issn = " ".join(current.get("SN", []))
 
-        source_id = f"ris:{doi or title[:50]}"
+        # Prefer stable accession IDs (WoS AN / UT) over DOI/title prefixes.
+        an = " ".join(current.get("AN", [])).strip()
+        ut = " ".join(current.get("UT", [])).strip()
+        if an:
+            source_id = an
+        elif ut:
+            source_id = ut
+        elif doi:
+            source_id = f"doi:{doi}"
+        else:
+            # Full-title hash avoids collisions from title[:50] truncation.
+            title_key = hashlib.md5(title.lower().encode("utf-8")).hexdigest()[:16]
+            source_id = f"title:{title_key}"
 
         return Record(
             source_db=source_db,
@@ -1537,6 +1670,180 @@ def _import_ris(path: Path, source_db: str) -> list[Record]:
     return records
 
 
+def _guess_ris_source_db(stem: str) -> str:
+    """Map a RIS filename stem to a canonical source_db label."""
+    stem_lower = stem.lower()
+    if (stem_lower.startswith("savedrecs")
+            or "wos" in stem_lower
+            or "web_of_science" in stem_lower
+            or "webofscience" in stem_lower):
+        return "wos"
+    if "psycinfo" in stem_lower or "ebsco" in stem_lower:
+        return "psycinfo"
+    if "scopus" in stem_lower:
+        return "scopus"
+    return stem
+
+
+def _record_completeness(r: Record) -> tuple:
+    """Sort key for choosing the best representative in a duplicate group."""
+    return (
+        1 if (r.abstract or "").strip() else 0,
+        len(r.abstract or ""),
+        len(r.title or ""),
+        len(r.authors or []),
+        1 if r.source_db == "pubmed" else 0,
+        r.year or 0,
+    )
+
+
+def _merge_record_fields(keeper: Record, donors: list[Record]) -> Record:
+    """Fill missing/short fields on keeper from donor siblings (same DOI group)."""
+    for d in sorted(donors, key=_record_completeness, reverse=True):
+        if len((keeper.title or "").strip()) < max(20, len((d.title or "").strip()) // 2):
+            if (d.title or "").strip():
+                keeper.title = d.title
+        # Upgrade, not just fill: a short/truncated abstract should lose to
+        # a substantially longer one from a sibling, not just an empty one
+        # (previously only fired when keeper.abstract was empty, which let
+        # a heavily truncated abstract "win" over full-length siblings).
+        keeper_abstract = (keeper.abstract or "").strip()
+        donor_abstract = (d.abstract or "").strip()
+        if donor_abstract and (
+            not keeper_abstract or len(keeper_abstract) < len(donor_abstract) // 2
+        ):
+            keeper.abstract = d.abstract
+        if not keeper.authors and d.authors:
+            keeper.authors = list(d.authors)
+        if not keeper.journal and d.journal:
+            keeper.journal = d.journal
+        if not keeper.doi and d.doi:
+            keeper.doi = d.doi
+        if not keeper.year and d.year:
+            keeper.year = d.year
+        if not keeper.pages and d.pages:
+            keeper.pages = d.pages
+        if not keeper.volume and d.volume:
+            keeper.volume = d.volume
+    return keeper
+
+
+def _collapse_exact_dois(
+    records: list[Record],
+) -> tuple[list[Record], dict[str, int], list[dict], set[str]]:
+    """Deterministic exact-DOI merge before fuzzy ASySD matching.
+
+    Returns (collapsed_records, stats, doi_title_conflicts, protected_ids).
+
+    ``protected_ids`` are namespaced ``source_db:source_id`` identifiers for
+    every record in a DOI group with a gross title conflict. Downstream
+    fuzzy matching (ASySD) must treat these as quarantined — never silently
+    auto-merge them — since they need human review (same-paper metadata
+    variant, erratum/original pair, or a genuine DOI collision).
+    """
+    by_doi: dict[str, list[Record]] = {}
+    no_doi: list[Record] = []
+    invalid_cleared = 0
+    for r in records:
+        raw = (r.doi or "").strip()
+        norm = _normalize_doi(raw)
+        if raw and not norm:
+            r.doi = None
+            invalid_cleared += 1
+            no_doi.append(r)
+            continue
+        if not norm:
+            no_doi.append(r)
+            continue
+        r.doi = norm  # canonical lowercase form
+        by_doi.setdefault(norm, []).append(r)
+
+    conflicts: list[dict] = []
+    protected_ids: set[str] = set()
+    collapsed: list[Record] = list(no_doi)
+    merged_groups = 0
+    records_removed = 0
+
+    for doi, group in by_doi.items():
+        if len(group) == 1:
+            collapsed.append(group[0])
+            continue
+
+        # Erratum / correction detection: if any record in this same-DOI
+        # group has an erratum/correction/corrigendum/retraction marker in
+        # its title, do NOT collapse.  These are distinct publications
+        # (the original article and the notice about it) that happen to
+        # share a DOI.  Collapsing them silently drops the original behind
+        # the erratum stub.  Route to protected_ids so ASySD also treats
+        # them as quarantined (demoted to maybe-pairs).
+        has_erratum = any(_is_erratum_title(g.title) for g in group)
+        if has_erratum:
+            log.info(
+                "erratum/correction group skipped collapse: DOI=%s n=%d titles=%s",
+                doi, len(group), [g.title[:120] for g in group],
+            )
+            collapsed.extend(group)
+            for g in group:
+                protected_ids.add(_namespaced_id(g.source_db, g.source_id))
+            conflicts.append({
+                "doi": doi,
+                "title1": next((g.title[:120] for g in group
+                                if _is_erratum_title(g.title)), ""),
+                "title2": next((g.title[:120] for g in group
+                                if not _is_erratum_title(g.title)), ""),
+                "source_db1": "",
+                "source_id1": "",
+                "source_db2": "",
+                "source_id2": "",
+                "conflict_type": "doi_erratum",
+            })
+            continue
+
+        # Gross title conflict → keep all, flag for review
+        titled = [(g, g.title.strip()) for g in group if (g.title or "").strip()]
+        conflict = False
+        for i in range(len(titled)):
+            for j in range(i + 1, len(titled)):
+                t1, t2 = titled[i][1], titled[j][1]
+                if len(t1) >= 20 and len(t2) >= 20 and _title_token_jaccard(t1, t2) < 0.4:
+                    conflict = True
+                    g1, g2 = titled[i][0], titled[j][0]
+                    conflicts.append({
+                        "doi": doi,
+                        "title1": t1[:120],
+                        "title2": t2[:120],
+                        "source_db1": g1.source_db,
+                        "source_id1": g1.source_id,
+                        "source_db2": g2.source_db,
+                        "source_id2": g2.source_id,
+                        "conflict_type": "title_jaccard",
+                    })
+        if conflict:
+            collapsed.extend(group)
+            for g in group:
+                protected_ids.add(_namespaced_id(g.source_db, g.source_id))
+            continue
+        best = max(group, key=_record_completeness)
+        best = _merge_record_fields(best, group)
+        collapsed.append(best)
+        merged_groups += 1
+        records_removed += len(group) - 1
+
+    stats = {
+        "exact_doi_groups_merged": merged_groups,
+        "exact_doi_records_removed": records_removed,
+        "exact_doi_title_conflicts": len(conflicts),
+        "invalid_dois_cleared": invalid_cleared,
+    }
+    log.info(
+        f"Exact-DOI collapse: {merged_groups} groups merged "
+        f"(-{records_removed} records), {len(conflicts)} title conflicts kept separate "
+        f"({len(protected_ids)} records protected from further auto-merge), "
+        f"{invalid_cleared} invalid DOIs cleared"
+    )
+    return collapsed, stats, conflicts, protected_ids
+
+
 def _collect_all_sources(search_dir: Path) -> tuple[list[Record], dict[str, list[Record]], dict[str, int]]:
     """Discover and load all data sources from a search directory.
 
@@ -1547,9 +1854,17 @@ def _collect_all_sources(search_dir: Path) -> tuple[list[Record], dict[str, list
     per_db: dict[str, int] = {}
 
     # 1. Load raw_*.csv files (API exports in Record schema)
+    # Skip mislabeled WoS leftovers (raw_savedrecs*.csv) — prefer re-import
+    # from RIS with corrected source_db=wos when RIS files are present.
     raw_csvs = sorted(search_dir.glob("raw_*.csv"))
+    ris_present = any(
+        p.name != "records_deduplicated.ris" for p in search_dir.glob("*.ris")
+    )
     for csv_path in raw_csvs:
         db_name = csv_path.stem.replace("raw_", "")  # e.g. "pubmed", "scopus"
+        if ris_present and db_name.startswith("savedrecs"):
+            log.info(f"Skipping {csv_path.name}: will re-import WoS from RIS as source_db=wos")
+            continue
         recs = _read_records_csv(csv_path)
         if recs:
             all_records_by_db[db_name] = recs
@@ -1602,16 +1917,7 @@ def _collect_all_sources(search_dir: Path) -> tuple[list[Record], dict[str, list
         # Skip our own deduplicated export
         if ris_path.name == "records_deduplicated.ris":
             continue
-        # Guess source_db from filename
-        stem_lower = ris_path.stem.lower()
-        if "wos" in stem_lower or "web_of_science" in stem_lower:
-            ris_db = "wos"
-        elif "psycinfo" in stem_lower or "ebsco" in stem_lower:
-            ris_db = "psycinfo"
-        elif "scopus" in stem_lower:
-            ris_db = "scopus"
-        else:
-            ris_db = ris_path.stem  # use filename as db name
+        ris_db = _guess_ris_source_db(ris_path.stem)
 
         recs = _import_ris(ris_path, ris_db)
         if recs:
@@ -1640,40 +1946,52 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
 
     Returns (deduped_records, dedup_stats).
     """
-    log.info(f"Total raw records across all sources: {len(all_records)}")
+    original_raw_count = len(all_records)
+    log.info(f"Total raw records across all sources: {original_raw_count}")
     log.info(f"Deduplication method: {DEDUP_METHOD}")
 
     maybe_pairs_data = []
+    exact_doi_stats: dict[str, int] = {}
+
+    # Deterministic exact-DOI merge before fuzzy matching
+    all_records, exact_doi_stats, doi_conflicts, protected_ids = _collapse_exact_dois(all_records)
+    conflicted_dois = {row["doi"] for row in doi_conflicts}
+    if doi_conflicts:
+        conflict_path = search_dir / "doi_title_conflicts.csv"
+        with open(conflict_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(doi_conflicts[0].keys()))
+            w.writeheader()
+            for row in doi_conflicts:
+                w.writerow(row)
+        log.info(f"Wrote {len(doi_conflicts)} DOI/title conflicts -> {conflict_path}")
 
     if DEDUP_METHOD == "asysd" and deduplicate_asysd is not None:
-        # ── Pre-normalize records for ASySD matching ──────────────────────
-        # ASySD strips punctuation before comparing fields.  WoS RIS exports
-        # use hyphens in compound terms ("MAGNETIC-RESONANCE") where
-        # PubMed/Scopus use spaces ("MAGNETIC RESONANCE").  After
-        # punctuation stripping these become "MAGNETICRESONANCE" vs
-        # "MAGNETIC RESONANCE", breaking title similarity even though they
-        # are the same paper.  We replace hyphens with spaces before
-        # passing to ASySD so both become "MAGNETIC RESONANCE".
-        #
-        # Authors have similar issues: periods in initials ("BLACK D.N."
-        # vs "BLACK DEBORAH N") reduce Jaro-Winkler similarity below the
-        # 0.75 threshold in the DOI-matching rule.  Stripping periods and
-        # collapsing whitespace normalizes these differences.
-        #
-        # These normalizations are lossy for dedup purposes but safe:
-        # they only affect the similarity computation, not the stored data.
+        # Pre-normalize for ASySD (hyphen/author cleanup). record_id is
+        # namespaced as source_db:source_id so PubMed/EuropePMC PMIDs do not
+        # collide as graph nodes.
         asysd_input = []
+        record_by_id: dict[str, Record] = {}
+        asysd_protected_ids: set[str] = set()
         for r in all_records:
+            base_rid = _namespaced_id(r.source_db, r.source_id)
+            rid = base_rid
+            n = 2
+            while rid in record_by_id:
+                rid = f"{base_rid}#{n}"
+                n += 1
+            record_by_id[rid] = r
+            if base_rid in protected_ids:
+                asysd_protected_ids.add(rid)
             title_norm = " ".join(r.title.replace("-", " ").split())
-            abstract_norm = " ".join(r.abstract.replace("-", " ").split()) if r.abstract else ""
-            # Normalize authors: strip periods and collapse whitespace so
-            # "BLACK D.N." and "BLACK DEBORAH N" both become "BLACK DN" / "BLACK DEBORAH N"
+            abstract_norm = (
+                " ".join(r.abstract.replace("-", " ").split()) if r.abstract else ""
+            )
             author_str = "; ".join(r.authors) if r.authors else None
             if author_str:
                 author_str = " ".join(author_str.replace(".", " ").split())
             asysd_input.append({
                 "source": r.source_db,
-                "record_id": r.source_id,
+                "record_id": rid,
                 "author": author_str,
                 "title": title_norm,
                 "year": str(r.year) if r.year else None,
@@ -1686,34 +2004,72 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
                 "isbn": r.isbn or None,
                 "label": r.source_db,
             })
+
         asysd_unique, asysd_stats, maybe_pairs_data = deduplicate_asysd(
-            asysd_input, keep_source="pubmed"
+            asysd_input, keep_source="pubmed", protected_ids=asysd_protected_ids
         )
 
-        # Convert back: map unique record_ids back to Record objects
-        record_by_id: dict[str, Record] = {}
-        for r in all_records:
-            record_by_id[r.source_id] = r
-
-        deduped = []
+        deduped: list[Record] = []
+        missing_ids: list[str] = []
         for rec_dict in asysd_unique:
             rid = rec_dict.get("record_id", "")
             if rid in record_by_id:
                 deduped.append(record_by_id[rid])
             else:
-                # Fallback: search by duplicate_id
                 dup_id = rec_dict.get("duplicate_id", "")
                 if dup_id in record_by_id:
                     deduped.append(record_by_id[dup_id])
+                else:
+                    missing_ids.append(rid or dup_id or "?")
+
+        if missing_ids:
+            log.error(
+                f"ASySD remap failed for {len(missing_ids)} record(s); "
+                f"sample IDs: {missing_ids[:10]}"
+            )
+            raise RuntimeError(
+                f"ASySD→Record remap lost {len(missing_ids)} records "
+                f"(asysd_unique={len(asysd_unique)}, mapped={len(deduped)})"
+            )
+        if len(deduped) != asysd_stats["unique"]:
+            raise RuntimeError(
+                f"ASySD unique count mismatch: asysd={asysd_stats['unique']} "
+                f"mapped={len(deduped)}"
+            )
+
+        # Fill truncated/missing fields from same-DOI siblings in the
+        # post-exact-DOI pool (helps PubMed titles truncated in stored CSV).
+        # Skip DOIs quarantined as title conflicts: those siblings are kept
+        # separate on purpose and must not bleed fields into each other.
+        by_doi: dict[str, list[Record]] = {}
+        for r in all_records:
+            d = _normalize_doi(r.doi)
+            if d:
+                by_doi.setdefault(d, []).append(r)
+        for survivor in deduped:
+            d = _normalize_doi(survivor.doi)
+            if d and d in by_doi and d not in conflicted_dois:
+                _merge_record_fields(survivor, by_doi[d])
 
         dedup_stats = {
-            "total_raw": asysd_stats["total_raw"],
+            "total_raw": original_raw_count,
             "unique": len(deduped),
-            "duplicates_removed": asysd_stats["duplicates_removed"],
+            "duplicates_removed": original_raw_count - len(deduped),
             "method": "asysd",
+            "asysd_unique": asysd_stats["unique"],
+            "asysd_duplicates_removed": asysd_stats["duplicates_removed"],
+            **exact_doi_stats,
         }
+        if (
+            dedup_stats["unique"] + dedup_stats["duplicates_removed"]
+            != dedup_stats["total_raw"]
+        ):
+            raise RuntimeError(
+                f"Dedup arithmetic broken: unique({dedup_stats['unique']}) + "
+                f"removed({dedup_stats['duplicates_removed']}) != "
+                f"raw({dedup_stats['total_raw']})"
+            )
 
-        # Export maybe_pairs to CSV
         if maybe_pairs_data:
             maybe_path = search_dir / "maybe_pairs.csv"
             with open(maybe_path, "w", newline="", encoding="utf-8") as f:
@@ -1725,15 +2081,24 @@ def _run_deduplication(all_records: list[Record], search_dir: Path) -> tuple[lis
 
     else:
         if DEDUP_METHOD == "asysd" and deduplicate_asysd is None:
-            log.warning("ASySD dedup not available (dedup_asysd module not found), "
-                        "falling back to simple dedup")
+            log.warning(
+                "ASySD dedup not available (dedup_asysd module not found), "
+                "falling back to simple dedup"
+            )
         deduped, dedup_stats = deduplicate_simple(all_records)
         dedup_stats["method"] = "simple"
+        dedup_stats["total_raw"] = original_raw_count
+        dedup_stats["unique"] = len(deduped)
+        dedup_stats["duplicates_removed"] = original_raw_count - len(deduped)
+        dedup_stats.update(exact_doi_stats)
 
-    log.info(f"After dedup: {len(deduped)} unique records "
-             f"({dedup_stats['duplicates_removed']} duplicates removed)")
+    log.info(
+        f"After dedup: {len(deduped)} unique records "
+        f"({dedup_stats['duplicates_removed']} duplicates removed)"
+    )
 
     return deduped, dedup_stats
+
 
 
 def export_results(records: list[Record],
@@ -1940,6 +2305,150 @@ def _confirm(prompt: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# ABSTRACT RECOVERY (cross-database, pre-dedup)
+# ---------------------------------------------------------------------------
+
+def _recover_abstracts(records: list[Record]) -> None:
+    """Recover empty abstracts via PubMed efetch, PubMed title search, and EuropePMC.
+
+    Runs after all databases are fetched and Scopus enrichment is done,
+    but BEFORE deduplication so the dedup matcher has maximum text.
+
+    Strategy (in order, first hit wins):
+      1. PubMed efetch by PMID — for PubMed records without an abstract.
+      2. PubMed title search → efetch — gated by title Jaccard similarity.
+      3. EuropePMC title search — gated by title Jaccard similarity.
+    """
+    need = [r for r in records if not r.abstract]
+    if not need:
+        return
+    log.info(f"Abstract recovery: {len(need)} records with empty abstracts. "
+             f"Attempting PubMed + EuropePMC title search...")
+
+    EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    headers = {"User-Agent": "FND-MetaAnalysis-Research/1.0 (academic research)"}
+    min_sim = 0.5
+
+    def _fetch_url(url: str, timeout: int = 15) -> tuple[str, int | None]:
+        try:
+            req = requests.get(url, headers=headers, timeout=timeout)
+            return req.text, req.status_code
+        except requests.RequestException as e:
+            return str(e), None
+
+    def _pubmed_efetch_record(pmid: str) -> tuple[str | None, str | None]:
+        url = (f"{EUTILS}/efetch.fcgi?db=pubmed&id={pmid}"
+               f"&rettype=abstract&retmode=xml")
+        text, status = _fetch_url(url)
+        if status != 200:
+            return None, None
+        root = ET.fromstring(text)
+        title = _element_text(root.find(".//ArticleTitle"))
+        parts = [_element_text(e) for e in root.findall(".//Abstract/AbstractText")]
+        abstract = _strip_html(" ".join(parts)) if parts else None
+        return abstract, title
+
+    def _pubmed_title_search(title: str, year: str | None) -> tuple[str | None, str]:
+        query = f'"{title[:200]}"'
+        if year:
+            query += f" AND {year}[pdat]"
+        from urllib.parse import quote
+        url = (f"{EUTILS}/esearch.fcgi?db=pubmed&term={quote(query)}"
+               f"&retmode=json&retmax=3")
+        text, status = _fetch_url(url)
+        if status != 200:
+            return None, "pubmed_title"
+        try:
+            ids = json.loads(text).get("esearchresult", {}).get("idlist", [])
+            for pmid in ids:
+                time.sleep(0.35)
+                abstract, hit_title = _pubmed_efetch_record(pmid)
+                if not abstract:
+                    continue
+                sim = _title_token_jaccard(title, hit_title or "")
+                if sim >= min_sim or not (hit_title or "").strip():
+                    return abstract, f"pubmed_title:{pmid}:sim={sim:.2f}"
+        except (json.JSONDecodeError, KeyError):
+            pass
+        return None, "pubmed_title"
+
+    def _epmc_title_search(title: str, year: str | None) -> tuple[str | None, str]:
+        from urllib.parse import quote
+        query = f'title:"{title[:200]}"'
+        if year:
+            query += f" AND PUB_YEAR:{year}"
+        url = (f"{EPMC}?query={quote(query)}"
+               f"&format=json&pageSize=3&resultType=core")
+        text, status = _fetch_url(url)
+        if status != 200:
+            return None, "europepmc_title"
+        try:
+            results = (json.loads(text)
+                       .get("resultList", {})
+                       .get("result", []))
+            for hit in results:
+                abstract = hit.get("abstractText", "")
+                if not abstract:
+                    continue
+                hit_title = _strip_html(hit.get("title", "") or "")
+                sim = _title_token_jaccard(title, hit_title)
+                if sim >= min_sim or not hit_title.strip():
+                    return (
+                        _strip_html(abstract),
+                        f"europepmc_title:{hit.get('id', '?')}:sim={sim:.2f}",
+                    )
+        except (json.JSONDecodeError, KeyError):
+            pass
+        return None, "europepmc_title"
+
+    recovered = 0
+    for i, rec in enumerate(need, 1):
+        abstract = None
+        provenance = ""
+
+        if rec.source_db == "pubmed" and rec.source_id:
+            pmid = rec.source_id
+            abstract, _hit_title = _pubmed_efetch_record(pmid)
+            if abstract:
+                provenance = f"pubmed_efetch:{pmid}"
+            time.sleep(0.35)
+
+        if not abstract and (rec.title or "").strip():
+            abstract, provenance = _pubmed_title_search(
+                rec.title, str(rec.year) if rec.year else None
+            )
+            time.sleep(0.35)
+
+        if not abstract and (rec.title or "").strip():
+            abstract, provenance = _epmc_title_search(
+                rec.title, str(rec.year) if rec.year else None
+            )
+            time.sleep(0.5)
+
+        if abstract:
+            rec.abstract = abstract
+            recovered += 1
+            log.debug(
+                f"  [{i}/{len(need)}] recovered via {provenance}: {rec.title[:60]}"
+            )
+        else:
+            log.debug(f"  [{i}/{len(need)}] not found: {rec.title[:60]}")
+
+        if i % 50 == 0:
+            log.info(
+                f"  Abstract recovery progress: {i}/{len(need)} "
+                f"(recovered={recovered})"
+            )
+
+    log.info(
+        f"Abstract recovery done: {recovered}/{len(need)} recovered "
+        f"({100 * recovered / len(need):.0f}%)"
+    )
+
+
+
+# ---------------------------------------------------------------------------
 # PHASE 1: SEARCH
 # ---------------------------------------------------------------------------
 
@@ -2040,6 +2549,12 @@ def run_searches() -> tuple[list[Record], dict[str, list[Record]], dict[str, int
                          f"missing abstracts (full author lists harvested from the same calls)")
                 ScopusClient()._enrich_abstracts(scopus_all)
 
+    # -- Cross-database abstract recovery (pre-dedup) -----------------------
+    if SKIP_ABSTRACT_RECOVERY:
+        log.info("Skipping abstract recovery (--skip-abstract-recovery)")
+    else:
+        _recover_abstracts(all_records)
+
     return all_records, all_records_by_db, per_db, queries
 
 
@@ -2117,12 +2632,27 @@ def run_dedup(search_dir: Path) -> None:
     log.info(f"  TOTAL: {len(all_records)} raw records across {len(per_db)} databases")
     log.info("=" * 60)
 
+    # -- Cross-database abstract recovery (pre-dedup) -----------------------
+    if SKIP_ABSTRACT_RECOVERY:
+        log.info("Skipping abstract recovery (--skip-abstract-recovery)")
+    else:
+        _recover_abstracts(all_records)
+
+    # Snapshot per-db records *before* dedup mutates them in place (exact-DOI
+    # field merging and post-ASySD sibling fill both mutate Record objects
+    # that are shared with all_records_by_db). Without this, the "raw"
+    # per-database audit CSVs would silently pick up cross-database title/
+    # abstract merges from records that happened to become a merge "keeper",
+    # making them unreliable as a record of what each database actually
+    # returned.
+    all_records_by_db_snapshot = copy.deepcopy(all_records_by_db)
+
     # Deduplication
     deduped, dedup_stats = _run_deduplication(all_records, search_dir)
 
     # Export
     export_results(
-        deduped, all_records_by_db, queries, per_db, dedup_stats,
+        deduped, all_records_by_db_snapshot, queries, per_db, dedup_stats,
         output_dir=search_dir,
         search_mode=search_mode,
         search_start_year=search_start_year,
@@ -2178,7 +2708,11 @@ def main() -> None:
         log.info("=" * 60)
         return
 
-    # Default mode: search + dedup + export in one pass
+    # Default mode: search + dedup + export in one pass.
+    # Snapshot per-db records before dedup mutates them in place (see the
+    # matching comment in run_dedup()) so the raw per-database audit CSVs
+    # stay faithful to what each database actually returned.
+    all_records_by_db_snapshot = copy.deepcopy(all_records_by_db)
     deduped, dedup_stats = _run_deduplication(all_records, OUTPUT_DIR)
 
     # Fetch abstracts for deduplicated Scopus-sourced records still missing them.
@@ -2191,7 +2725,7 @@ def main() -> None:
         ScopusClient()._enrich_abstracts(scopus_need_abstract)
 
     export_results(
-        deduped, all_records_by_db, queries, per_db, dedup_stats,
+        deduped, all_records_by_db_snapshot, queries, per_db, dedup_stats,
         output_dir=OUTPUT_DIR,
         search_mode=SEARCH_MODE,
         search_start_year=SEARCH_START_YEAR,

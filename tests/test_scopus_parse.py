@@ -164,6 +164,30 @@ def test_isbn_list_of_dicts():
     print(f"✓ ISBN/ISSN list-of-dicts: isbn={rec.isbn!r} issn={rec.issn!r}")
 
 
+def test_single_author_as_bare_dict():
+    """A lone author in the top-level 'author' field may arrive as a bare
+    dict instead of a list-of-dicts (observed Scopus API inconsistency).
+
+    Regression test: iterating a dict yields its string keys, and calling
+    '.get(...)' on those strings previously raised AttributeError.
+    """
+    entry = dict(COMPLETE_ENTRY)
+    entry["author"] = {"@auid": "56482983700", "authname": "Solo A."}
+    rec = ScopusClient._parse(entry)
+    assert rec.authors == ["Solo A."], f"Got {rec.authors}"
+    print(f"✓ Single author as bare dict: {rec.authors}")
+
+
+def test_author_list_with_non_dict_entries():
+    """A malformed author list containing non-dict entries should be
+    skipped rather than crashing."""
+    entry = dict(COMPLETE_ENTRY)
+    entry["author"] = [{"authname": "Real A."}, "garbage-string", None]
+    rec = ScopusClient._parse(entry)
+    assert rec.authors == ["Real A."], f"Got {rec.authors}"
+    print(f"✓ Author list with non-dict entries: {rec.authors}")
+
+
 def test_record_has_new_fields():
     """Record dataclass should have volume, issue, pages, isbn, issn fields."""
     fields = Record.__dataclass_fields__
@@ -241,6 +265,8 @@ if __name__ == "__main__":
     test_url_extraction()
     test_isbn_list_handling()
     test_isbn_list_of_dicts()
+    test_single_author_as_bare_dict()
+    test_author_list_with_non_dict_entries()
     test_record_has_new_fields()
     test_parse_abstract_authors_full()
     test_parse_abstract_authors_fallback_surname()

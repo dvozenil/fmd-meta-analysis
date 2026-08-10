@@ -10,7 +10,7 @@ Updated and extended meta-analysis of neuroimaging findings in Functional Neurol
 | **Student lead** | David Voženílek |
 | **GitHub** | [dvozenil/fmd-meta-analysis](https://github.com/dvozenil/fmd-meta-analysis) |
 | **Notion** | [Project hub](https://app.notion.com/p/352cf8786b8180c0b2d4ecb65b85c14d) · [Protocol](https://app.notion.com/p/352cf8786b81816fb261cff71e17249f) |
-| **Status** | Search pipeline ready — production search next |
+| **Status** | Pipeline v2 — DOI fix + abstract recovery integrated |
 
 ## What this extends
 
@@ -119,14 +119,19 @@ The search script loads `.env` automatically. Required keys:
 | `SCOPUS_API_KEY` | Scopus | Elsevier Developer Portal; also enables abstract + full author retrieval |
 | `WOS_API_KEY` | Web of Science | Requires institutional WoS license; rarely available — script generates manual query file instead |
 
-### Scopus abstract enrichment
+### Scopus enrichment
 
-The Scopus API returns metadata in the search response but may not include abstracts depending on the API key's entitlement level (STANDARD vs COMPLETE view). The script handles this with a two-stage pipeline:
+The Scopus search API returns bibliographic metadata (title, DOI, year, journal) but only the first author (`dc:creator`). When using the COMPLETE search view, abstracts (`dc:description`) are included for ~88% of records. The script enriches the remaining records via the Elsevier Abstract Retrieval API, which also fills in the **full author list** needed for dedup matching.
 
-1. **Search** — retrieves bibliographic metadata (title, DOI, year, journal, first author)
-2. **Abstract Retrieval** — fetches full abstracts and complete author lists for records missing them, using the Elsevier Abstract Retrieval API with automatic view probing (`META_ABS → META → FULL`)
+### Cross-database abstract recovery
 
-When using ASySD deduplication (default), enrichment runs **before** dedup so the similarity matcher has abstracts and full author lists to work with. Rate-limited at 0.35s between calls.
+After all databases are fetched (and Scopus enrichment is done), the pipeline runs a cross-database abstract recovery pass for any records still missing abstracts:
+
+1. **PubMed efetch by PMID** — for PubMed records that came back without an abstract
+2. **PubMed title search → efetch** — for non-PubMed records (Scopus, WoS, PsycInfo, EuropePMC) whose title can be found in PubMed
+3. **EuropePMC title search** — broader coverage including conference papers
+
+This runs **before** deduplication so the similarity matcher has maximum text. Typical recovery rate: ~20% of empty abstracts recovered.
 
 ### Deduplication
 

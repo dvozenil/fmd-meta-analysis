@@ -35,8 +35,12 @@ PI: Petr Sojka. Student lead: David Voženílek.
   auto-discovers `raw_*.csv`, `EBSCO*.csv`, and `*.ris` files.
 
   **Dedup algorithm:** `--dedup-algo asysd` (default, ASySD-class) or
-  `--dedup-algo simple` (DOI+title hash). ASySD uses Jaro-Winkler similarity
-  on authors, titles, abstracts, and bibliographic fields.
+  `--dedup-algo simple` (DOI+title hash). Before ASySD, an **exact-DOI
+  collapse** merges records that share a validated DOI (`10.…`), keeping the
+  most complete copy and filling missing fields from siblings. ASySD then
+  fuzzy-matches the remainder. Record IDs are namespaced as
+  `source_db:source_id`. Use `--skip-abstract-recovery` when re-deduping a
+  folder whose raw CSVs already have recovered abstracts.
 - **Screening** is in `scripts/llm_screen_abstracts.py`. It calls any
   OpenAI-compatible endpoint (LM Studio for local models, API for frontier).
   System prompt is loaded from `--prompt <file>` or falls back to the embedded
@@ -68,20 +72,37 @@ PI: Petr Sojka. Student lead: David Voženílek.
 - Screening model output must be valid JSON matching the schema in the prompt.
   Parse failures are treated as "include" (safe default).
 
-## Current state (2026-07-17)
+## Current state (2026-07-31 corpus, erratum-fix re-run 2026-08-05)
 
-- **Production search complete:** `fnd_search_20260717_123354/` — 5 databases,
-  7,058 raw records, 3,530 unique after ASySD dedup. PsycINFO (EBSCOhost,
-  485 records) and WoS (3× RIS export due to 1,000-record limit, 2,055
-  records) imported manually. Scopus search switched to POST to handle
-  expanded query terms (413 Payload Too Large on GET).
-- **500 maybe-pairs** flagged for manual review (7.5% of pairs); 120 share
-  the same DOI (definite duplicates). Most are WoS RIS formatting artifacts
-  (hyphenated compound terms reducing Jaro-Winkler title similarity).
-- **529 records (15%) missing abstracts:** 251 Scopus (pre-1996 records),
-  242 WoS (export limitations), 32 PubMed, 4 Europe PMC. Reported in
-  `prisma_search_metadata.json` under `abstracts_missing`. Screen by title;
-  retrieve full text where title is insufficient.
+- **Production search + dedup (candidate screening corpus):**
+  `fnd_search_20260731_193704_retest2_fixed/` — `--dedup` on the round-2
+  cleaned raw CSVs (5 databases, 7,088 raw) with the erratum/corrigendum fix
+  applied → **7,088 raw → 3,562 unique** after exact-DOI collapse + ASySD.
+  PsycINFO (EBSCO, 488) and WoS (`savedrecs*.ris`, 2,065, labeled `wos`)
+  imported manually. Import `records_deduplicated.ris` into Rayyan/ASReview.
+- **Dedup hardening (branch `pipeline-v2-doi-fix-abstract-recovery`):**
+  namespaced record IDs, exact-DOI merge, complete-record survivor preference,
+  PubMed nested-XML title/abstract fix, EuropePMC title HTML strip, WoS
+  `savedrecs*` → `wos`, gated abstract recovery, **erratum/corrigendum/
+  retraction title detection** (recovers the original article and the PPPD
+  original that were being merged/silently collapsed behind erratum stubs),
+  PRISMA arithmetic asserts. Verified: gap=0, no exact-DOI leftovers in
+  export, no empty-kept-when-full.
+- **7 DOI/title conflicts** in `doi_title_conflicts.csv`:
+  **2 `title_jaccard`** (human review — COVID-19 vaccine EN/ES pair, S2k
+  guideline full/abridged pair) and **5 `doi_erratum`** (auto-kept-apart:
+  PPPD original + its "Correction to:" notice; s108173 conversion-disorder
+  erratum↔original; pmip fMRI erratum↔original; one `RETRACTED:` notice; and
+  one **false-positive group** `10.1080/09593985.2024.2316309` where the
+  medical "correction of hallux valgus" title is not an erratum — accepted
+  noise). Review before freezing screening start.
+- **123 maybe-pairs** in `maybe_pairs.csv` (was 104 pre-fix). 6 tagged
+  `conflict_type=doi_erratum` (including the spurious hallux-valgus group,
+  `""`); 41 WoS `GRANTS:`, 6 `PQDT:`, 6 `BCI:`, 8 `MEDLINE:`, 96 identical
+  title_sim=1.0, 27 non-identical. Spot-check before screening; not blocking.
+- **461/3,562 (12.9%) missing abstracts** (re-dedup used `--skip-abstract-
+  recovery`). Re-run `--dedup` *without* that flag to recover more from WoS
+  empties, or screen by title / full text as needed.
 - **Boeckle validation complete:** 25/25 sensitivity.
 - **Ludwig cross-validation complete:** 15/15 = 100% sensitivity.
 - **Criteria-ID traceability** and thread-safe output implemented.
@@ -89,12 +110,17 @@ PI: Petr Sojka. Student lead: David Voženílek.
 
 ## What's next
 
-1. **Resolve maybe-pairs** — batch-merge 120 same-DOI pairs, scan remaining ~380.
-2. **Begin title/abstract screening** — human + LLM dual screening on the
-   3,530 deduplicated records.
-3. **Handle missing abstracts** — screen by title; retrieve full text for
+1. **Review `doi_title_conflicts.csv`** (7 rows) — confirm the auto-kept-apart
+   `doi_erratum` cases (incl. the accepted false-positive group) and the 2
+   `title_jaccard` language/abridgment calls are acceptable.
+2. **Optional:** re-dedup the `_fixed` folder *without* `--skip-abstract-
+   recovery` to shrink missing abstracts, then freeze it as the screening
+   corpus.
+3. **Begin title/abstract screening** — human + LLM dual screening on the
+   3,562 deduplicated records.
+4. **Handle missing abstracts** — screen by title; retrieve full text for
    ambiguous cases.
-4. **Methods paper model runs** (if pursued): add WMCC metrics, run model
+5. **Methods paper model runs** (if pursued): add WMCC metrics, run model
    ladder, analyze per `docs/methods_paper_plan.md`.
 
 ## Validation archive
@@ -123,8 +149,18 @@ validation milestones:
   which after ASySD punctuation stripping produce concatenated words
   ("MAGNETICRESONANCE") that reduce title similarity. Our pre-processing
   normalizes hyphens to spaces before dedup, but some edge cases remain.
-- WoS only allows 1,000 records per RIS export; split into multiple files
-  (`wos_1.ris`, `wos_2.ris`, etc.). The dedup phase auto-combines them.
+- WoS only allows 1,000 records per RIS export; split into multiple files.
+  Default Clarivate names (`savedrecs.ris`, `savedrecs-2.ris`, …) are
+  auto-mapped to `source_db=wos`. Prefer `wos_1.ris` etc. for clarity.
+- Do **not** leave stale `raw_savedrecs*.csv` beside RIS files when
+  re-deduping — the importer skips those CSVs and re-reads RIS as `wos`.
+- PubMed titles/abstracts with nested XML (`<i>`, `<sup>`) must use full
+  element text (`itertext`); old runs may still have truncated titles in
+  raw CSV until sibling field-merge repairs survivors.
+- ASySD `record_id` must be namespaced (`pubmed:PMID`); bare PMIDs collide
+  with Europe PMC and historically caused silent export loss.
+- Dedup must satisfy `unique + duplicates_removed == total_raw`; the script
+  raises if remap loses records.
 - Scopus abstracts require institutional VPN. The script handles missing
   Scopus gracefully (logs and skips).
 - `--os_table_recall` mode is reference-only — it demonstrates why exact OS
@@ -143,7 +179,8 @@ validation milestones:
 
 ## Testing
 
-No formal test suite. Validation is done via:
+No formal test suite beyond targeted scripts. Validation is done via:
+- `test_dedup_asysd.py` — ASySD unit tests (incl. exact-DOI / keep-complete)
 - `validation/scripts/validate_os_recall.py` — Boeckle sensitivity check
 - `validation/scripts/validate_ludwig_recall.py` — Ludwig sensitivity check
 - `validation/scripts/compare_human_llm.py` — inter-rater comparison

@@ -59,6 +59,35 @@ def _jw(a: str | None, b: str | None) -> float:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# ERRATUM / CORRECTION DETECTION
+# ════════════════════════════════════════════════════════════════════════════
+
+# Match erratum/correction markers anywhere in the title (word-boundary),
+# not just as a prefix.  This catches titles like:
+#   "Erratum: Uncovering the etiology..."     (prefix — common in WoS/Scopus)
+#   "...functional neuroimaging" Corrigendum   (suffix — common in PsycINFO)
+_ERRATUM_TITLE_RE = re.compile(
+    r"\b(?:erratum|errata|correction|corrigendum|corrigenda|"
+    r"retract|retracted|retraction|retractions|withdrawal)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_erratum_title(title: str | None) -> bool:
+    """True if a title marks a correction/erratum/retraction record.
+
+    Used to demote exact-DOI pairs where exactly one side is an erratum:
+    those pairs share a DOI but represent distinct publications (the
+    original article and the notice about it), and silently merging
+    them drops the original article behind an erratum stub during
+    screening.
+    """
+    if title is None:
+        return False
+    return bool(_ERRATUM_TITLE_RE.search(str(title)))
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # FORMATTING / NORMALIZATION  (port of format_citations + order_citations)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -83,7 +112,11 @@ def _normalize_author(author: str | None) -> str | None:
 
 
 def _clean_doi(doi: str | None) -> str | None:
-    """Port of format_citations DOI cleaning."""
+    """Port of format_citations DOI cleaning, plus basic validity check.
+
+    Rejects values that do not look like DOIs after cleaning (e.g. bare
+    ``232``), so they cannot create false exact-DOI matches.
+    """
     if doi is None or str(doi).strip() == "" or str(doi).strip() == "NA":
         return None
     d = str(doi).upper()
@@ -95,7 +128,7 @@ def _clean_doi(doi: str | None) -> str | None:
             d = d[len(prefix):]
     d = d.replace("DOI: ", "").replace("DOI:", "").replace("DOI", "")
     d = d.strip()
-    if d == "":
+    if d == "" or not d.startswith("10."):
         return None
     return d
 
@@ -198,19 +231,36 @@ def format_citations(records: list[dict]) -> list[dict]:
     return formatted
 
 
-def order_citations(records: list[dict]) -> list[dict]:
-    """Port of R's order_citations() — sort by (abstract, year) so that
-    records with abstracts and newer years come last (preferred for keeping).
+def order_citations(records: list[dict],
+                    keep_source: str | None = None) -> list[dict]:
+    """Order records so the *first* row in each duplicate group is preferred.
 
-    R uses arrange(abstract, year) which sorts ascending; the *first* row
-    in each duplicate group is the one kept.  We replicate that ordering.
+    ASySD's R code sorts ascending and keeps ``slice_head()`` (first).  The
+    original port treated empty abstracts as preferred, which systematically
+    discarded complete records.  We instead prefer:
+
+      1. non-empty abstract
+      2. ``keep_source`` (e.g. pubmed) when set
+      3. longer abstract / longer title (completeness)
+      4. newer year
     """
     def sort_key(r: dict) -> tuple:
-        # R's arrange(abstract, year) — ascending on both.
-        # NA/None sorts first in R (na.last=FALSE by default in arrange).
-        abstract = r.get("abstract") or ""
-        year = r.get("year") or ""
-        return (str(abstract), str(year))
+        abstract = str(r.get("abstract") or "").strip()
+        title = str(r.get("title") or "").strip()
+        year_s = str(r.get("year") or "").strip()
+        try:
+            year_n = int(year_s) if year_s else 0
+        except ValueError:
+            year_n = 0
+        source = r.get("source") or ""
+        return (
+            0 if abstract else 1,                          # has abstract first
+            0 if (keep_source and source == keep_source) else 1,
+            -len(abstract),
+            -len(title),
+            -year_n,
+            str(r.get("record_id") or ""),
+        )
 
     return sorted(records, key=sort_key)
 
@@ -406,6 +456,13 @@ def _is_true_match(p: PairData) -> bool:
 
         (doi > 0.95 and a > 0.75 and t > 0.9),
 
+        # Exact cleaned-DOI match is decisive on its own.  Title/author can
+        # be truncated or formatted differently across databases; requiring
+        # them blocked true cross-DB duplicates (see maybe_pairs same-DOI).
+        # Gross title conflicts are demoted to maybe_pairs in
+        # identify_true_matches.
+        doi >= 1.0,
+
         (t > 0.80 and ab > 0.90 and vol > 0.85 and jnl > 0.65 and a > 0.9),
         (t > 0.90 and ab > 0.80 and vol > 0.85 and jnl > 0.65 and a > 0.9),
 
@@ -447,15 +504,61 @@ def _is_true_match(p: PairData) -> bool:
     return any(rules)
 
 
-def identify_true_matches(pairs: list[PairData]) -> tuple[list[PairData], list[PairData]]:
+def identify_true_matches(
+    pairs: list[PairData],
+    protected_ids: set[str] | None = None,
+) -> tuple[list[PairData], list[PairData]]:
     """Port of R's identify_true_matches().
+
+    Parameters
+    ----------
+    protected_ids : set[str] | None
+        Record ids that an upstream stage has already flagged as belonging
+        to a gross DOI/title conflict (e.g. the exact-DOI collapse in
+        ``fnd_meta_search.py``, which uses a different similarity metric
+        than the in-ASySD Jaro-Winkler check below). Any pair touching a
+        protected id is always demoted to ``maybe_pairs`` regardless of
+        which rule matched it as "true" — this prevents ASySD from
+        silently re-merging records that were quarantined for manual
+        review upstream.
 
     Returns (true_pairs, maybe_pairs) where:
       - true_pairs are confident duplicates (after all filters)
       - maybe_pairs need manual review
     """
+    protected_ids = protected_ids or set()
+
     # Step 1: Apply threshold rules
     true_pairs = [p for p in pairs if _is_true_match(p)]
+
+    # Step 1b: Exact-DOI pairs with grossly conflicting titles → maybe, not true.
+    # Protects against rare DOI metadata errors while still auto-merging the
+    # common case (same paper, truncated/HTML-differing titles).
+    #
+    # Erratum-titled exact matches are also demoted, but for a different
+    # reason: an erratum/correction/retraction is a *distinct publication*
+    # sharing the DOI with the original article.  Merging them hides the
+    # original behind the erratum stub at screening time.  Route them to
+    # maybe(pairs) so a human can decide pair-by-pair.
+    doi_title_conflicts: list[PairData] = []
+    kept_true: list[PairData] = []
+    for p in true_pairs:
+        if p.doi >= 1.0:
+            t1_err = _is_erratum_title(p.title1)
+            t2_err = _is_erratum_title(p.title2)
+            if t1_err != t2_err:
+                # Exactly one side is erratum — demote regardless of title
+                # similarity, because they are distinct publications.
+                doi_title_conflicts.append(p)
+                continue
+        if (p.doi >= 1.0 and p.title1 and p.title2 and p.title < 0.6
+                and len(p.title1) >= 15 and len(p.title2) >= 15):
+            doi_title_conflicts.append(p)
+        elif p.record_id1 in protected_ids or p.record_id2 in protected_ids:
+            doi_title_conflicts.append(p)
+        else:
+            kept_true.append(p)
+    true_pairs = kept_true
 
     # Step 2: DOI mismatch filter (lines 368-374)
     # Find true_pairs with low matching DOIs (not NA, not 0, not >0.99)
@@ -522,6 +625,9 @@ def identify_true_matches(pairs: list[PairData]) -> tuple[list[PairData], list[P
     for p in year_mismatch_major:
         if (p.record_id1, p.record_id2) not in {(m.record_id1, m.record_id2) for m in maybe_pairs}:
             maybe_pairs.append(p)
+    for p in doi_title_conflicts:
+        if (p.record_id1, p.record_id2) not in {(m.record_id1, m.record_id2) for m in maybe_pairs}:
+            maybe_pairs.append(p)
 
     return true_pairs, maybe_pairs
 
@@ -556,6 +662,33 @@ def generate_dup_id(true_pairs: list[PairData],
 
     # Get connected components
     components = list(nx.connected_components(g))
+
+    # ── Defensive erratum logging ───────────────────────────────────────
+    # If a component contains BOTH erratum-titled and non-erratum-titled
+    # records, log it for audit.  This should be rare after Layer A
+    # (pairwise demotion in identify_true_matches), but can still occur
+    # via transitive closure through non-DOI rules.  We do NOT split
+    # the component here — Layer A handles the pairwise case, and
+    # production's _collapse_exact_dois handles same-DOI erratum groups.
+    rid_to_record_for_log: dict[str, dict] = {}
+    for rec in formatted:
+        rid = rec["record_id"]
+        rid_to_record_for_log[rid] = rec
+
+    for members in components:
+        member_list = list(members)
+        erratum_members = {m for m in member_list
+                           if _is_erratum_title(
+                               rid_to_record_for_log.get(m, {}).get("title"))}
+        original_members = set(member_list) - erratum_members
+        if erratum_members and original_members:
+            log.warning(
+                "erratum-containing component: %d originals, %d errata "
+                "(records: originals=%s, errata=%s)",
+                len(original_members), len(erratum_members),
+                sorted(original_members)[:5],
+                sorted(erratum_members)[:5],
+            )
 
     # Map record_id → component_id (1-based)
     record_to_component: dict[str, int] = {}
@@ -610,6 +743,7 @@ def generate_dup_id(true_pairs: list[PairData],
 def deduplicate_asysd(
     records: list[dict],
     keep_source: str | None = None,
+    protected_ids: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, int], list[dict]]:
     """ASySD-class deduplication.
 
@@ -623,6 +757,11 @@ def deduplicate_asysd(
     keep_source : str | None
         If set, preferentially keep records from this source as the
         representative in each duplicate group.
+    protected_ids : set[str] | None
+        Record ids quarantined by an upstream conflict check (see
+        ``identify_true_matches``). Pairs touching these ids are never
+        auto-merged as "true" duplicates; they are demoted to
+        ``maybe_pairs`` for manual review instead.
 
     Returns
     -------
@@ -636,7 +775,7 @@ def deduplicate_asysd(
 
     # Step 1: Order and format citations
     log.info(f"ASySD: formatting {len(records)} records...")
-    ordered = order_citations(records)
+    ordered = order_citations(records, keep_source=keep_source)
     formatted = format_citations(ordered)
 
     # Step 2: Generate candidate pairs via blocking
@@ -661,7 +800,7 @@ def deduplicate_asysd(
 
     # Step 4: Identify true and maybe matches
     log.info("ASySD: identifying true matches...")
-    true_pairs, maybe_pairs = identify_true_matches(pair_data)
+    true_pairs, maybe_pairs = identify_true_matches(pair_data, protected_ids=protected_ids)
     log.info(f"ASySD: {len(true_pairs)} true duplicate pairs, "
              f"{len(maybe_pairs)} maybe pairs for manual review")
 
@@ -703,6 +842,12 @@ def deduplicate_asysd(
             "abstract_sim": round(p.abstract, 4),
             "doi_sim": round(p.doi, 4),
             "journal_sim": round(p.journal, 4),
+            "conflict_type": (
+                "doi_erratum" if (
+                    p.doi >= 1.0
+                    and _is_erratum_title(p.title1) != _is_erratum_title(p.title2)
+                ) else ""
+            ),
         }
         for p in maybe_pairs
     ]
