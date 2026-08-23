@@ -17,6 +17,8 @@ This document records them as a planned backlog so the knowledge isn't lost.
 
 ## 1. Modular per-database search (high value)
 
+**Status: DONE (issue #8, PR #9)** — `--db` flag and YAML config system implemented.
+
 **Problem:** `run_searches()` always fires all 4 API clients (pubmed, europepmc,
 wos, scopus) plus the EBSCO psycinfo import. There is no CLI flag to harvest a
 single database (e.g. `--db pubmed`). This is why targeted regenerations (the
