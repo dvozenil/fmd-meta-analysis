@@ -3,3 +3,4 @@ requests
 python-dotenv
 rapidfuzz>=3.0.0
 networkx>=3.0
+PyYAML>=6.0

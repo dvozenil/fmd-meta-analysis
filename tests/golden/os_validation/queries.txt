@@ -1,0 +1,24 @@
+--- pubmed ---
+("dissociative disorder"[tiab] OR "functional disorder"[tiab] OR "conversion disorder"[tiab]) AND ("neuro imaging"[tiab] OR "magnetic resonance imaging"[tiab] OR "fMRI"[tiab] OR "MRI"[tiab] OR "VBM"[tiab] OR "PET"[tiab] OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])) AND ("1800/01/01"[Date - Publication] : "2015/08/31"[Date - Publication])
+
+--- europepmc ---
+(TITLE_ABS:("dissociative disorder" OR "functional disorder" OR "conversion disorder")) AND (TITLE_ABS:("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET" OR ("magnetic" AND "resonance" AND "imaging"))) AND (LANG:"eng") AND (PUB_YEAR:[1800 TO 2015])
+
+--- wos ---
+TS=("dissociative disorder" OR "functional disorder" OR "conversion disorder") AND TS=("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET" OR ("magnetic" AND "resonance" AND "imaging")) AND LA=(English) AND PY=1800-2015
+
+--- scopus ---
+(TITLE-ABS-KEY("dissociative disorder" OR "functional disorder" OR "conversion disorder")) AND (TITLE-ABS-KEY("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET" OR ("magnetic" AND "resonance" AND "imaging"))) AND PUBYEAR < 2016 AND LANGUAGE(english)
+
+--- ebsco_psycinfo ---
+((TI ("dissociative disorder" OR "functional disorder" OR "conversion disorder") OR AB ("dissociative disorder" OR "functional disorder" OR "conversion disorder") OR SU ("dissociative disorder" OR "functional disorder" OR "conversion disorder"))) AND ((TI ("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET") OR AB ("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET") OR SU ("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET")) OR (TI (magnetic AND resonance AND imaging) OR AB (magnetic AND resonance AND imaging) OR SU (magnetic AND resonance AND imaging))) AND LA English AND PY 1800-2015
+
+--- _search_mode ---
+os_validation
+
+--- _search_start_year ---
+None
+
+--- _search_end_date ---
+2015/08/31
+
