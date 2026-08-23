@@ -57,6 +57,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 import requests
+import yaml
 from Bio import Entrez
 
 try:
@@ -115,6 +116,18 @@ def _parse_args() -> argparse.Namespace:
         help="Skip cross-database abstract recovery (useful when re-deduping "
              "a folder whose raw CSVs already have recovered abstracts).",
     )
+    parser.add_argument(
+        "--terms", metavar="PATH", default=None,
+        help="Path to a YAML search-config file. Overrides mode-based term "
+             "selection (takes precedence over --mode/--update/... flags).",
+    )
+    parser.add_argument(
+        "--db", metavar="NAME", action="append", default=None,
+        choices=["pubmed", "europepmc", "wos", "scopus"],
+        help="Restrict which API clients execute (repeatable). Valid: pubmed, "
+             "europepmc, wos, scopus. Default: all 4. All 5 query strings are "
+             "always generated for queries.json regardless of --db.",
+    )
     return parser.parse_args()
 
 _cli_args = _parse_args()
@@ -123,6 +136,8 @@ DEDUP_METHOD: str = _cli_args.dedup_algo
 NO_DEDUP: bool = _cli_args.no_dedup
 DEDUP_ONLY_DIR: str | None = _cli_args.dedup_dir
 SKIP_ABSTRACT_RECOVERY: bool = _cli_args.skip_abstract_recovery
+TERMS_PATH: str | None = _cli_args.terms
+DB_FILTER: list[str] = _cli_args.db or []
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION (conditional on --search vs --dedup mode)
@@ -597,18 +612,94 @@ class SearchTermConfig:
     block_c: list[str] | None = None
 
 
-def _active_terms() -> tuple[list[str], list[str]]:
-    """Return FND and imaging/topic term lists for the current search mode.
-
-    For backward compatibility, returns a 2-tuple. Ludwig mode assembles a
-    3-block query internally via _active_term_config().
-    """
-    config = _active_term_config()
-    return config.block_a, config.block_b
+_DEFAULT_PUBMED_MESH_FND = ["Conversion Disorder", "Dissociative Disorders"]
+_DEFAULT_PUBMED_MESH_IMAGING = [
+    "Neuroimaging", "Magnetic Resonance Imaging", "Diffusion Tensor Imaging",
+    "Positron-Emission Tomography", "Tomography, Emission-Computed, Single-Photon",
+]
 
 
-def _active_term_config() -> SearchTermConfig:
-    """Return full search term configuration for the current search mode."""
+@dataclass
+class SearchConfig(SearchTermConfig):
+    """Full search configuration loaded from YAML (extends SearchTermConfig)."""
+    # Search options
+    mode: str = "custom"
+    date_start: int | None = None     # None = inception (1800)
+    date_end: str = "today"           # YYYY/MM/DD or "today"
+    language_filter: bool = True
+    # Per-DB syntax options
+    mri_fallback: bool = False
+    pubmed_use_mesh: bool = True
+    pubmed_mesh_terms_fnd: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_PUBMED_MESH_FND))
+    pubmed_mesh_terms_imaging: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_PUBMED_MESH_IMAGING))
+    pubmed_use_exclusions: bool = True
+    pubmed_use_human_filter: bool = True
+
+
+def _term_set_lookup(term_sets: dict, key: str | None) -> list[str]:
+    """Resolve a blocks.<x> key into its term_sets list."""
+    if not key:
+        return []
+    if key not in term_sets:
+        raise ValueError(
+            f"block references unknown term_set {key!r}; "
+            f"available: {sorted(term_sets)}"
+        )
+    return list(term_sets[key])
+
+
+def load_search_config(path: str | Path) -> SearchConfig:
+    """Load a SearchConfig from a YAML file at *path*."""
+    path = Path(path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or "term_sets" not in raw:
+        raise ValueError(
+            f"Invalid search config {path}: missing top-level 'term_sets'"
+        )
+
+    term_sets = raw.get("term_sets") or {}
+    blocks = raw.get("blocks") or {}
+    search = raw.get("search") or {}
+    syntax = search.get("syntax") or {}
+    pubmed_syntax = syntax.get("pubmed") or {}
+
+    def _yaml_start(value) -> int | None:
+        if value is None or str(value).strip().lower() in ("inception", "none", ""):
+            return None
+        return int(value)
+
+    def _yaml_end(value) -> str:
+        if value is None or str(value).strip() == "":
+            return "today"
+        return str(value)
+
+    block_c = None
+    if blocks.get("block_c"):
+        block_c = _term_set_lookup(term_sets, blocks["block_c"])
+
+    return SearchConfig(
+        block_a=_term_set_lookup(term_sets, blocks.get("block_a")),
+        block_b=_term_set_lookup(term_sets, blocks.get("block_b")),
+        block_c=block_c,
+        mode=str(search.get("mode", "custom")),
+        date_start=_yaml_start(search.get("date_start")),
+        date_end=_yaml_end(search.get("date_end")),
+        language_filter=bool(search.get("language_filter", True)),
+        mri_fallback=bool(syntax.get("mri_fallback", False)),
+        pubmed_use_mesh=bool(pubmed_syntax.get("use_mesh", True)),
+        pubmed_mesh_terms_fnd=list(
+            pubmed_syntax.get("mesh_terms_fnd", _DEFAULT_PUBMED_MESH_FND)),
+        pubmed_mesh_terms_imaging=list(
+            pubmed_syntax.get("mesh_terms_imaging", _DEFAULT_PUBMED_MESH_IMAGING)),
+        pubmed_use_exclusions=bool(pubmed_syntax.get("use_exclusions", True)),
+        pubmed_use_human_filter=bool(pubmed_syntax.get("use_human_filter", True)),
+    )
+
+
+def _legacy_term_config() -> SearchTermConfig:
+    """Term blocks selected purely from SEARCH_MODE (pre-YAML behaviour)."""
     if SEARCH_MODE == "os_validation":
         return SearchTermConfig(OS_FND_TERMS, OS_IMAGING_TERMS)
     if SEARCH_MODE == "os_table_recall":
@@ -620,27 +711,79 @@ def _active_term_config() -> SearchTermConfig:
     return SearchTermConfig(FND_TERMS, IMAGING_TERMS)
 
 
-def _date_filter_pubmed() -> str:
-    """Build PubMed date filter."""
-    start = f"{SEARCH_START_YEAR}/01/01" if SEARCH_START_YEAR else "1800/01/01"
-    return (
-        f'AND ("{start}"[Date - Publication] : '
-        f'"{SEARCH_END_DATE}"[Date - Publication])'
+def _active_search_config() -> SearchConfig:
+    """Return the SearchConfig in effect for the current run.
+
+    Priority:
+      1. --terms <path> (explicit YAML override)
+      2. search_configs/<SEARCH_MODE>.yaml (mode flag / env wrapper)
+      3. in-memory legacy term lists + module date globals (fallback)
+    """
+    if TERMS_PATH:
+        return load_search_config(TERMS_PATH)
+    cfg_path = Path(__file__).resolve().parent / "search_configs" / f"{SEARCH_MODE}.yaml"
+    if SEARCH_MODE and cfg_path.is_file():
+        return load_search_config(cfg_path)
+    legacy = _legacy_term_config()
+    return SearchConfig(
+        block_a=legacy.block_a,
+        block_b=legacy.block_b,
+        block_c=legacy.block_c,
+        mode=SEARCH_MODE or "custom",
+        date_start=SEARCH_START_YEAR,
+        date_end=SEARCH_END_DATE or "today",
+        language_filter=SEARCH_MODE not in {"os_table_recall", "ludwig_validation"},
     )
 
 
-def _date_filter_year_range() -> str:
+def _active_terms() -> tuple[list[str], list[str]]:
+    """Return FND and imaging/topic term lists for the current search mode.
+
+    For backward compatibility, returns a 2-tuple. Ludwig mode assembles a
+    3-block query internally via _active_term_config().
+    """
+    config = _active_term_config()
+    return config.block_a, config.block_b
+
+
+def _active_term_config() -> SearchTermConfig:
+    """Return full search term configuration for the current mode.
+
+    Mode flags (--full, --os_validation, ...) are thin wrappers: they pin
+    SEARCH_MODE and this loads search_configs/<mode>.yaml internally.
+    """
+    return _active_search_config()
+
+
+def _config_end_date(config: SearchConfig) -> str:
+    """Resolve the config end date to a concrete YYYY/MM/DD string."""
+    if config.date_end and str(config.date_end) != "today":
+        return str(config.date_end)
+    return datetime.now().strftime("%Y/%m/%d")
+
+
+def _date_filter_pubmed(config: SearchConfig) -> str:
+    """Build PubMed date filter."""
+    start = f"{config.date_start}/01/01" if config.date_start else "1800/01/01"
+    end = _config_end_date(config)
+    return (
+        f'AND ("{start}"[Date - Publication] : '
+        f'"{end}"[Date - Publication])'
+    )
+
+
+def _date_filter_year_range(config: SearchConfig) -> str:
     """Build year range for APIs that accept only publication years."""
-    start = SEARCH_START_YEAR if SEARCH_START_YEAR else 1800
-    end = int(SEARCH_END_DATE[:4])
+    start = config.date_start if config.date_start else 1800
+    end = int(_config_end_date(config)[:4])
     return f"{start} TO {end}"
 
 
-def _scopus_date_filter() -> str:
+def _scopus_date_filter(config: SearchConfig) -> str:
     """Build Scopus publication-year filter."""
-    end = int(SEARCH_END_DATE[:4])
-    if SEARCH_START_YEAR:
-        return f" AND PUBYEAR > {SEARCH_START_YEAR - 1} AND PUBYEAR < {end + 1}"
+    end = int(_config_end_date(config)[:4])
+    if config.date_start:
+        return f" AND PUBYEAR > {config.date_start - 1} AND PUBYEAR < {end + 1}"
     return f" AND PUBYEAR < {end + 1}"
 
 
@@ -672,14 +815,15 @@ def _build_pubmed_text_block(terms: list[str]) -> str:
     return " OR ".join(f'"{t}"[tiab]' for t in terms)
 
 
-def build_pubmed_query() -> str:
+def build_pubmed_query(config: SearchConfig | None = None) -> str:
     """PubMed syntax: uses [MeSH Terms], [tiab], field tags."""
-    config = _active_term_config()
+    config = config or _active_search_config()
     fnd_terms, imaging_terms = config.block_a, config.block_b
-    if SEARCH_MODE in _VALIDATION_MODES:
+    if not config.pubmed_use_mesh:
+        # Validation-style text-block query (no MeSH wrapping, no language filter)
         fnd_block = _build_pubmed_text_block(fnd_terms)
         imaging_block = _build_pubmed_text_block(imaging_terms)
-        if SEARCH_MODE == "os_validation":
+        if config.mri_fallback:
             imaging_block += (
                 ' OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])'
             )
@@ -687,41 +831,40 @@ def build_pubmed_query() -> str:
         if config.block_c:
             design_block = _build_pubmed_text_block(config.block_c)
             query += f" AND ({design_block})"
-        return f"{query} {_date_filter_pubmed()}"
+        return f"{query} {_date_filter_pubmed(config)}"
 
-    fnd_block = (
-        '("Conversion Disorder"[MeSH] OR "Dissociative Disorders"[MeSH] '
-        'OR ' + _build_pubmed_text_block(fnd_terms) + ')'
-    )
-    imaging_block = (
-        '("Neuroimaging"[MeSH] OR "Magnetic Resonance Imaging"[MeSH] '
-        'OR "Diffusion Tensor Imaging"[MeSH] OR "Positron-Emission Tomography"[MeSH] '
-        'OR "Tomography, Emission-Computed, Single-Photon"[MeSH] '
-        'OR ' + _build_pubmed_text_block(imaging_terms) + ')'
-    )
-    filters = (
-        '(English[Language]) '
-        'AND ("humans"[MeSH Terms]) '
-        + _date_filter_pubmed()
-    )
+    mesh_fnd = " OR ".join(f'"{t}"[MeSH]' for t in config.pubmed_mesh_terms_fnd)
+    mesh_imaging = " OR ".join(f'"{t}"[MeSH]' for t in config.pubmed_mesh_terms_imaging)
+    fnd_block = f'({mesh_fnd} OR ' + _build_pubmed_text_block(fnd_terms) + ')'
+    imaging_block = f'({mesh_imaging} OR ' + _build_pubmed_text_block(imaging_terms) + ')'
+    filter_core = []
+    if config.language_filter:
+        filter_core.append("(English[Language])")
+    if config.pubmed_use_human_filter:
+        filter_core.append('("humans"[MeSH Terms])')
+    # _date_filter_pubmed() already carries its leading "AND ", so append it
+    # without an extra separator (mirrors the original string concatenation).
+    filters = " AND ".join(filter_core)
+    if filter_core:
+        filters += " "
+    filters += _date_filter_pubmed(config)
     exclusions = (
         'NOT ("Editorial"[Publication Type] OR "Letter"[Publication Type] '
         'OR "Comment"[Publication Type])'
-    )
+    ) if config.pubmed_use_exclusions else ""
     return f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}"
 
 
-def build_wos_query() -> str:
+def build_wos_query(config: SearchConfig | None = None) -> str:
     """Web of Science syntax: TS= searches Topic (title + abstract + keywords)."""
-    config = _active_term_config()
+    config = config or _active_search_config()
     fnd = _build_wos_phrase_or_block(config.block_a)
     imag = _build_wos_phrase_or_block(config.block_b)
-    if SEARCH_MODE == "os_validation":
+    if config.mri_fallback:
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
-    year_range = _date_filter_year_range().replace(" TO ", "-")
+    year_range = _date_filter_year_range(config).replace(" TO ", "-")
     date_part = f" AND PY={year_range}"
-    no_lang_modes = {"os_table_recall", "ludwig_validation"}
-    lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LA=(English)"
+    lang_part = "" if not config.language_filter else " AND LA=(English)"
     query = f'TS=({fnd}) AND TS=({imag})'
     if config.block_c:
         design = _build_wos_phrase_or_block(config.block_c)
@@ -729,16 +872,15 @@ def build_wos_query() -> str:
     return f'{query}{lang_part}{date_part}'
 
 
-def build_europepmc_query() -> str:
+def build_europepmc_query(config: SearchConfig | None = None) -> str:
     """Europe PMC syntax: similar to Lucene. Uses TITLE_ABS, PUB_YEAR."""
-    config = _active_term_config()
+    config = config or _active_search_config()
     fnd = _build_europepmc_phrase_or_block(config.block_a)
     imag = _build_europepmc_phrase_or_block(config.block_b)
-    if SEARCH_MODE == "os_validation":
+    if config.mri_fallback:
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
-    date_part = f" AND (PUB_YEAR:[{_date_filter_year_range()}])"
-    no_lang_modes = {"os_table_recall", "ludwig_validation"}
-    lang_part = '' if SEARCH_MODE in no_lang_modes else ' AND (LANG:"eng")'
+    date_part = f" AND (PUB_YEAR:[{_date_filter_year_range(config)}])"
+    lang_part = '' if not config.language_filter else ' AND (LANG:"eng")'
     query = f'(TITLE_ABS:({fnd})) AND (TITLE_ABS:({imag}))'
     if config.block_c:
         design = _build_europepmc_phrase_or_block(config.block_c)
@@ -746,7 +888,7 @@ def build_europepmc_query() -> str:
     return f'{query}{lang_part}{date_part}'
 
 
-def build_ebsco_psycinfo_query() -> str:
+def build_ebsco_psycinfo_query(config: SearchConfig | None = None) -> str:
     """EBSCOhost APA PsycInfo / PsycArticles syntax.
 
     Uses TI (Title), AB (Abstract), and SU (Subjects — includes author
@@ -757,20 +899,19 @@ def build_ebsco_psycinfo_query() -> str:
     It is written to queries.json / queries.txt for manual search and
     export from the EBSCOhost web UI.
     """
-    config = _active_term_config()
+    config = config or _active_search_config()
     fnd = _build_ebsco_tiabsu_block(config.block_a)
     imag = _build_ebsco_tiabsu_block(config.block_b)
-    if SEARCH_MODE == "os_validation":
+    if config.mri_fallback:
         imag = (
             f'{imag} OR '
             f'(TI (magnetic AND resonance AND imaging) '
             f'OR AB (magnetic AND resonance AND imaging) '
             f'OR SU (magnetic AND resonance AND imaging))'
         )
-    year_range = _date_filter_year_range().replace(" TO ", "-")
+    year_range = _date_filter_year_range(config).replace(" TO ", "-")
     date_part = f" AND PY {year_range}"
-    no_lang_modes = {"os_table_recall", "ludwig_validation"}
-    lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LA English"
+    lang_part = "" if not config.language_filter else " AND LA English"
     query = f"({fnd}) AND ({imag})"
     if config.block_c:
         design = _build_ebsco_tiabsu_block(config.block_c)
@@ -778,16 +919,15 @@ def build_ebsco_psycinfo_query() -> str:
     return f"{query}{lang_part}{date_part}"
 
 
-def build_scopus_query() -> str:
+def build_scopus_query(config: SearchConfig | None = None) -> str:
     """Scopus syntax: TITLE-ABS-KEY field tag, AND/OR Boolean."""
-    config = _active_term_config()
+    config = config or _active_search_config()
     fnd = _build_scopus_phrase_or_block(config.block_a)
     imag = _build_scopus_phrase_or_block(config.block_b)
-    if SEARCH_MODE == "os_validation":
+    if config.mri_fallback:
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
-    date_part = _scopus_date_filter()
-    no_lang_modes = {"os_table_recall", "ludwig_validation"}
-    lang_part = "" if SEARCH_MODE in no_lang_modes else " AND LANGUAGE(english)"
+    date_part = _scopus_date_filter(config)
+    lang_part = "" if not config.language_filter else " AND LANGUAGE(english)"
     query = f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag}))'
     if config.block_c:
         design = _build_scopus_phrase_or_block(config.block_c)
@@ -2459,28 +2599,29 @@ def run_searches() -> tuple[list[Record], dict[str, list[Record]], dict[str, int
     Raw CSVs are NOT written here — that happens in export_results after dedup
     (or in run_dedup for the two-phase workflow).
     """
-    log.info(f"Search mode: {SEARCH_MODE}")
-    if SEARCH_MODE == "os_validation":
+    config = _active_search_config()
+    log.info(f"Search mode: {config.mode}")
+    if config.mode == "os_validation":
         log.info("Using Boeckle et al. (2016) validation terms")
-    elif SEARCH_MODE == "os_table_recall":
+    elif config.mode == "os_table_recall":
         log.info("Using broadened terms for Table 1 recall (no language filter at search stage)")
-    elif SEARCH_MODE == "ludwig_validation":
+    elif config.mode == "ludwig_validation":
         log.info("Using Ludwig et al. (2018) trauma-in-FND validation terms (3-block query)")
-    log.info(f"Date range: {'inception' if SEARCH_START_YEAR is None else SEARCH_START_YEAR} "
-             f"to {SEARCH_END_DATE}")
+    log.info(f"Date range: {'inception' if config.date_start is None else config.date_start} "
+             f"to {_config_end_date(config)}")
 
     if Entrez.email == "CHANGE_ME@institution.edu":
         log.warning("NCBI_EMAIL not set — update Entrez.email or set NCBI_EMAIL env var")
 
     queries = {
-        "pubmed":         build_pubmed_query(),
-        "europepmc":      build_europepmc_query(),
-        "wos":            build_wos_query(),
-        "scopus":         build_scopus_query(),
-        "ebsco_psycinfo": build_ebsco_psycinfo_query(),
-        "_search_mode":   SEARCH_MODE,
-        "_search_start_year": SEARCH_START_YEAR,
-        "_search_end_date": SEARCH_END_DATE,
+        "pubmed":         build_pubmed_query(config),
+        "europepmc":      build_europepmc_query(config),
+        "wos":            build_wos_query(config),
+        "scopus":         build_scopus_query(config),
+        "ebsco_psycinfo": build_ebsco_psycinfo_query(config),
+        "_search_mode":   config.mode,
+        "_search_start_year": config.date_start,
+        "_search_end_date": _config_end_date(config),
     }
 
     with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
@@ -2501,6 +2642,11 @@ def run_searches() -> tuple[list[Record], dict[str, list[Record]], dict[str, int
         "wos":       (WebOfScienceClient(), queries["wos"]),
         "scopus":    (ScopusClient(),       queries["scopus"]),
     }
+    # --db restricts which API clients EXECUTE. All 5 query strings (incl.
+    # ebsco_psycinfo) are still generated above for queries.json/queries.txt.
+    if DB_FILTER:
+        clients = {name: v for name, v in clients.items() if name in DB_FILTER}
+        log.info(f"--db filter applied; executing only: {sorted(clients)}")
 
     for name, (client, q) in clients.items():
         try:
@@ -2727,9 +2873,9 @@ def main() -> None:
     export_results(
         deduped, all_records_by_db_snapshot, queries, per_db, dedup_stats,
         output_dir=OUTPUT_DIR,
-        search_mode=SEARCH_MODE,
-        search_start_year=SEARCH_START_YEAR,
-        search_end_date=SEARCH_END_DATE,
+        search_mode=queries.get("_search_mode", SEARCH_MODE),
+        search_start_year=queries.get("_search_start_year", SEARCH_START_YEAR),
+        search_end_date=queries.get("_search_end_date", SEARCH_END_DATE),
     )
 
     log.info("=" * 60)

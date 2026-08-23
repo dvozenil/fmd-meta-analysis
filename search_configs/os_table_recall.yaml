@@ -1,0 +1,80 @@
+project:
+  name: "fnd-neuroimaging-os_table_recall"
+  description: "FND neuroimaging meta-analysis search (os_table_recall)"
+  version: "1.0"
+
+search:
+  mode: "os_table_recall"
+  date_start: "inception"        # "inception" or YYYY
+  date_end: "2015/08/31"          # YYYY/MM/DD or "today"
+  language_filter: false    # true=English-only
+
+  syntax:
+    pubmed:
+      use_mesh: false
+      use_exclusions: false
+      use_human_filter: false
+    wos:
+      use_language_filter: false
+    europepmc:
+      use_language_filter: false
+    scopus:
+      use_language_filter: false
+    ebsco_psycinfo:
+      use_language_filter: false
+    mri_fallback: false
+
+term_sets:
+  fnd_terms:
+      - "dissociative disorder"
+      - "functional disorder"
+      - "conversion disorder"
+      - "hysterical conversion"
+      - "hysterical paralysis"
+      - "hysterical anaesthesia"
+      - "motor conversion"
+      - "sensory conversion"
+      - "sensorimotor conversion"
+      - "psychogenic movement disorder"
+      - "psychogenic non-epileptic seizure"
+      - "psychogenic nonepileptic seizure"
+      - "psychogenic tremor"
+      - "psychogenic dystonia"
+      - "psychogenic paralysis"
+      - "somatoform disorder"
+      - "somatization disorder"
+      - "body dysmorphic disorder"
+      - "PNES"
+      - "non-epileptic seizure"
+      - "nonepileptic seizure"
+      - "non-epileptic attack"
+      - "nonepileptic attack"
+      - "pseudoseizure"
+      - "pseudoseizures"
+      - "dissociative identity disorder"
+      - "dissociative convulsion"
+      - "astasia-abasia"
+      - "idiopathic dystonia"
+      - "functional neurological"
+  imaging_terms:
+      - "neuro imaging"
+      - "neuroimaging"
+      - "magnetic resonance imaging"
+      - "fMRI"
+      - "MRI"
+      - "VBM"
+      - "PET"
+      - "SPECT"
+      - "single photon emission"
+      - "EEG"
+      - "electroencephalography"
+      - "MEG"
+      - "magnetoencephalography"
+      - "computed tomography"
+      - "positron emission tomography"
+      - "brain imaging"
+
+blocks:
+  block_a: "fnd_terms"
+  block_b: "imaging_terms"
+  block_c: null
