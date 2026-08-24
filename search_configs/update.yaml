@@ -16,14 +16,6 @@ search:
       mesh_terms_imaging: ["Neuroimaging", "Magnetic Resonance Imaging", "Diffusion Tensor Imaging", "Positron-Emission Tomography", "Tomography, Emission-Computed, Single-Photon"]
       use_exclusions: true
       use_human_filter: true
-    wos:
-      use_language_filter: true
-    europepmc:
-      use_language_filter: true
-    scopus:
-      use_language_filter: true
-    ebsco_psycinfo:
-      use_language_filter: true
     mri_fallback: false
 
 term_sets:

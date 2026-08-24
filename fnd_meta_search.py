@@ -647,7 +647,12 @@ def _term_set_lookup(term_sets: dict, key: str | None) -> list[str]:
             f"block references unknown term_set {key!r}; "
             f"available: {sorted(term_sets)}"
         )
-    return list(term_sets[key])
+    value = term_sets[key]
+    if isinstance(value, str):
+        raise ValueError(
+            f"term_sets['{key}'] must be a list, got string: {value!r}"
+        )
+    return list(value)
 
 
 def load_search_config(path: str | Path, date_end_override: str | None = None) -> SearchConfig:
@@ -861,12 +866,19 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
         filter_core.append("(English[Language])")
     if config.pubmed_use_human_filter:
         filter_core.append('("humans"[MeSH Terms])')
-    # _date_filter_pubmed() already carries its leading "AND ", so append it
-    # without an extra separator (mirrors the original string concatenation).
+    # _date_filter_pubmed() carries a leading "AND " separator. When
+    # filter_core is empty (language_filter=false AND
+    # pubmed_use_human_filter=false — a valid combination when use_mesh is
+    # true) that leading AND would collide with the template's own "AND",
+    # producing "... AND AND (...)". Strip it so the date filter is appended
+    # as a plain segment.
+    date_filter = _date_filter_pubmed(config)
+    if not filter_core and date_filter.startswith("AND "):
+        date_filter = date_filter[4:]
     filters = " AND ".join(filter_core)
     if filter_core:
         filters += " "
-    filters += _date_filter_pubmed(config)
+    filters += date_filter
     exclusions = (
         'NOT ("Editorial"[Publication Type] OR "Letter"[Publication Type] '
         'OR "Comment"[Publication Type])'

@@ -13,12 +13,3 @@ TS=("psychogenic" OR "conversion disorder" OR "non-epileptic") AND TS=("abuse" O
 --- ebsco_psycinfo ---
 ((TI ("psychogenic" OR "conversion disorder" OR "non-epileptic") OR AB ("psychogenic" OR "conversion disorder" OR "non-epileptic") OR SU ("psychogenic" OR "conversion disorder" OR "non-epileptic"))) AND ((TI ("abuse" OR "life event") OR AB ("abuse" OR "life event") OR SU ("abuse" OR "life event"))) AND ((TI ("control" OR "controlled" OR "case-control") OR AB ("control" OR "controlled" OR "case-control") OR SU ("control" OR "controlled" OR "case-control"))) AND PY 1800-2016
 
---- _search_mode ---
-ludwig_validation
-
---- _search_start_year ---
-None
-
---- _search_end_date ---
-2016/11/04
-

@@ -41,14 +41,6 @@ search:
         - "Tomography, Emission-Computed, Single-Photon"
       use_exclusions: true                  # NOT (Editorial OR Letter OR Comment)
       use_human_filter: true                # ("humans"[MeSH Terms])
-    wos:
-      use_language_filter: true             # override search.language_filter for this DB
-    europepmc:
-      use_language_filter: true
-    scopus:
-      use_language_filter: true
-    ebsco_psycinfo:
-      use_language_filter: true
     mri_fallback: false                     # true = add 'OR ("magnetic" AND "resonance" AND
                                             #   "imaging")' to the imaging block in every DB
                                             #   (Boeckle os_validation quirk). Default false.

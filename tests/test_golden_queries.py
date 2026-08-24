@@ -52,6 +52,21 @@ def _load_golden(mode: str) -> dict:
         return json.load(f)
 
 
+def _render_queries_txt(queries: dict) -> str:
+    """Mirror ``run_searches()``'s queries.txt formatting.
+
+    Only real query strings are emitted, each headed by ``--- <db> ---`` and
+    blank-line separated; ``_search_*`` metadata keys are skipped (they live
+    in queries.json, not the human copy-paste file).
+    """
+    parts = []
+    for db, q in queries.items():
+        if db.startswith("_"):
+            continue
+        parts.append(f"--- {db} ---\n{q}\n\n")
+    return "".join(parts)
+
+
 @pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("db", DBS)
 def test_golden_queries_match(mode, db):
@@ -71,6 +86,25 @@ def test_golden_queries_match(mode, db):
     )
     query = BUILDERS[db](config)
     assert query == golden[db], f"Query mismatch for mode={mode!r}, db={db!r}"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_golden_queries_txt_match(mode):
+    """Assert the rebuilt queries render byte-identical to the golden queries.txt.
+
+    ``queries.txt`` is the human copy-paste artifact; it must match the
+    production ``run_searches()`` layout exactly (``--- <db> ---`` headers,
+    real query strings only, no ``_search_*`` metadata keys).
+    """
+    golden = _load_golden(mode)
+    config = load_search_config(
+        CONFIG_DIR / f"{mode}.yaml",
+        date_end_override=golden["_search_end_date"],
+    )
+    queries = {db: BUILDERS[db](config) for db in DBS}
+    rendered = _render_queries_txt(queries)
+    golden_txt = (GOLDEN_DIR / mode / "queries.txt").read_text(encoding="utf-8")
+    assert rendered == golden_txt, f"queries.txt mismatch for mode={mode!r}"
 
 
 def test_all_five_databases_present_in_every_golden():

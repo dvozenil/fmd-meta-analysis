@@ -90,9 +90,9 @@ blocks:
 
 ### Per-database syntax overrides
 
-Under `search.syntax` you can override options per database. The PubMed block
-supports the most options; other databases mostly override the language
-filter. Each option is explained below.
+Under `search.syntax` you can override options per database. Currently only
+the PubMed block exposes options; the other databases have no per-DB
+overrides. Each option is explained below.
 
 ```yaml
 search:
@@ -107,14 +107,6 @@ search:
         - "Magnetic Resonance Imaging"
       use_exclusions: true
       use_human_filter: true
-    wos:
-      use_language_filter: true
-    europepmc:
-      use_language_filter: true
-    scopus:
-      use_language_filter: true
-    ebsco_psycinfo:
-      use_language_filter: true
     mri_fallback: false
 ```
 
@@ -130,12 +122,13 @@ Option reference:
   `Diffusion Tensor Imaging`, `Positron-Emission Tomography`, etc.).
 - `pubmed.use_exclusions` — `true` adds `NOT (Editorial OR Letter OR Comment)`.
 - `pubmed.use_human_filter` — `true` adds `("humans"[MeSH Terms])`.
-- `wos.use_language_filter` / `europepmc.use_language_filter` /
-  `scopus.use_language_filter` / `ebsco_psycinfo.use_language_filter` —
-  per-database override of the top-level `search.language_filter`.
 - `mri_fallback` — `true` adds `OR ("magnetic" AND "resonance" AND "imaging")`
   to the imaging block in **every** database. This is a Boeckle
   `os_validation` quirk; default is `false`.
+
+The language filter is a **single global flag**: top-level `search.language_filter`
+applies to every database — there is no per-database language override. Set it
+to `true` to restrict to English, or `false` for no language restriction.
 
 ## Using --db to Select Databases
 
@@ -224,8 +217,8 @@ Concrete walk-through for a new review (e.g. a trauma/FND variant search):
 3. **Set the date range.** Pick `date_start` (`"inception"` or a year) and
    `date_end` (`"today"` or a specific date) for your review window.
 4. **Choose the language filter.** Set `language_filter: true` to restrict to
-   English, or `false` for no restriction. Adjust per database under `syntax`
-   if needed.
+   English, or `false` for no restriction. This single global flag applies to
+   every database — there is no per-database override.
 5. **Test on one database first** to validate the query shape and hit count
    before spending API quota on all sources:
    ```bash

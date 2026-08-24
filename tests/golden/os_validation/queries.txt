@@ -13,12 +13,3 @@ TS=("dissociative disorder" OR "functional disorder" OR "conversion disorder") A
 --- ebsco_psycinfo ---
 ((TI ("dissociative disorder" OR "functional disorder" OR "conversion disorder") OR AB ("dissociative disorder" OR "functional disorder" OR "conversion disorder") OR SU ("dissociative disorder" OR "functional disorder" OR "conversion disorder"))) AND ((TI ("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET") OR AB ("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET") OR SU ("neuro imaging" OR "magnetic resonance imaging" OR "fMRI" OR "MRI" OR "VBM" OR "PET")) OR (TI (magnetic AND resonance AND imaging) OR AB (magnetic AND resonance AND imaging) OR SU (magnetic AND resonance AND imaging))) AND LA English AND PY 1800-2015
 
---- _search_mode ---
-os_validation
-
---- _search_start_year ---
-None
-
---- _search_end_date ---
-2015/08/31
-

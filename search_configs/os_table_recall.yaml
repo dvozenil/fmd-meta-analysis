@@ -14,14 +14,6 @@ search:
       use_mesh: false
       use_exclusions: false
       use_human_filter: false
-    wos:
-      use_language_filter: false
-    europepmc:
-      use_language_filter: false
-    scopus:
-      use_language_filter: false
-    ebsco_psycinfo:
-      use_language_filter: false
     mri_fallback: false
 
 term_sets:
