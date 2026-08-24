@@ -57,16 +57,23 @@ BUILDERS = [
 
 
 def build_queries(mode: str) -> dict:
-    """Build and return the full queries dict for *mode*."""
-    cfg = MODES[mode]
-    fms.SEARCH_MODE = mode
-    fms.SEARCH_START_YEAR = cfg["start_year"]
-    fms.SEARCH_END_DATE = cfg["end_date"]
+    """Build and return the full queries dict for *mode*.
 
-    queries = {name: builder() for name, builder in BUILDERS}
-    queries["_search_mode"] = fms.SEARCH_MODE
-    queries["_search_start_year"] = fms.SEARCH_START_YEAR
-    queries["_search_end_date"] = fms.SEARCH_END_DATE
+    Config end dates are pinned via ``date_end_override`` because the committed
+    ``update``/``full`` YAMLs now use the dynamic ``"today"`` sentinel — without
+    the pin, a regeneration would silently embed the run date instead of the
+    stable golden reference dates.
+    """
+    cfg = MODES[mode]
+    config = fms.load_search_config(
+        ROOT / "search_configs" / f"{mode}.yaml",
+        date_end_override=cfg["end_date"],
+    )
+
+    queries = {name: builder(config) for name, builder in BUILDERS}
+    queries["_search_mode"] = mode
+    queries["_search_start_year"] = cfg["start_year"]
+    queries["_search_end_date"] = cfg["end_date"]
     return queries
 
 
@@ -78,7 +85,10 @@ def write_golden(mode: str, queries: dict) -> Path:
         json.dump(queries, f, indent=2)
 
     with open(out_dir / "queries.txt", "w", encoding="utf-8") as f:
+        # Mirror run_searches(): only real query strings, no "_search_*" metadata.
         for db, q in queries.items():
+            if db.startswith("_"):
+                continue
             f.write(f"--- {db} ---\n{q}\n\n")
 
     return out_dir

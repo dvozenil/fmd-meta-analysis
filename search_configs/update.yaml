@@ -6,7 +6,7 @@ project:
 search:
   mode: "update"
   date_start: "2015"        # "inception" or YYYY
-  date_end: "2026/07/31"          # YYYY/MM/DD or "today"
+  date_end: "today"              # YYYY/MM/DD or "today"
   language_filter: true    # true=English-only
 
   syntax:

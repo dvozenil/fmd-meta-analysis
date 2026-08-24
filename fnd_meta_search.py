@@ -650,8 +650,14 @@ def _term_set_lookup(term_sets: dict, key: str | None) -> list[str]:
     return list(term_sets[key])
 
 
-def load_search_config(path: str | Path) -> SearchConfig:
-    """Load a SearchConfig from a YAML file at *path*."""
+def load_search_config(path: str | Path, date_end_override: str | None = None) -> SearchConfig:
+    """Load a SearchConfig from a YAML file at *path*.
+
+    ``date_end_override``, when given, replaces the YAML's configured end date
+    (including the dynamic ``"today"`` sentinel) with a fixed YYYY/MM/DD value.
+    It exists so golden regression tests can pin the date deterministically
+    while the committed config files use ``"today"``.
+    """
     path = Path(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or "term_sets" not in raw:
@@ -675,6 +681,10 @@ def load_search_config(path: str | Path) -> SearchConfig:
             return "today"
         return str(value)
 
+    date_end = _yaml_end(search.get("date_end"))
+    if date_end_override is not None:
+        date_end = str(date_end_override)
+
     block_c = None
     if blocks.get("block_c"):
         block_c = _term_set_lookup(term_sets, blocks["block_c"])
@@ -685,7 +695,7 @@ def load_search_config(path: str | Path) -> SearchConfig:
         block_c=block_c,
         mode=str(search.get("mode", "custom")),
         date_start=_yaml_start(search.get("date_start")),
-        date_end=_yaml_end(search.get("date_end")),
+        date_end=date_end,
         language_filter=bool(search.get("language_filter", True)),
         mri_fallback=bool(syntax.get("mri_fallback", False)),
         pubmed_use_mesh=bool(pubmed_syntax.get("use_mesh", True)),
@@ -718,22 +728,31 @@ def _active_search_config() -> SearchConfig:
       1. --terms <path> (explicit YAML override)
       2. search_configs/<SEARCH_MODE>.yaml (mode flag / env wrapper)
       3. in-memory legacy term lists + module date globals (fallback)
+
+    Regardless of which source wins, the ``FND_SEARCH_END_DATE`` env var (if
+    set) overrides the config's end date — matching main's historical
+    behaviour where ``SEARCH_END_DATE = os.getenv("FND_SEARCH_END_DATE", ...)``.
     """
     if TERMS_PATH:
-        return load_search_config(TERMS_PATH)
-    cfg_path = Path(__file__).resolve().parent / "search_configs" / f"{SEARCH_MODE}.yaml"
-    if SEARCH_MODE and cfg_path.is_file():
-        return load_search_config(cfg_path)
-    legacy = _legacy_term_config()
-    return SearchConfig(
-        block_a=legacy.block_a,
-        block_b=legacy.block_b,
-        block_c=legacy.block_c,
-        mode=SEARCH_MODE or "custom",
-        date_start=SEARCH_START_YEAR,
-        date_end=SEARCH_END_DATE or "today",
-        language_filter=SEARCH_MODE not in {"os_table_recall", "ludwig_validation"},
-    )
+        config = load_search_config(TERMS_PATH)
+    else:
+        cfg_path = Path(__file__).resolve().parent / "search_configs" / f"{SEARCH_MODE}.yaml"
+        if SEARCH_MODE and cfg_path.is_file():
+            config = load_search_config(cfg_path)
+        else:
+            legacy = _legacy_term_config()
+            config = SearchConfig(
+                block_a=legacy.block_a,
+                block_b=legacy.block_b,
+                block_c=legacy.block_c,
+                mode=SEARCH_MODE or "custom",
+                date_start=SEARCH_START_YEAR,
+                date_end=SEARCH_END_DATE or "today",
+                language_filter=SEARCH_MODE not in {"os_table_recall", "ludwig_validation"},
+            )
+    if env_end := os.getenv("FND_SEARCH_END_DATE"):
+        config.date_end = env_end
+    return config
 
 
 def _active_terms() -> tuple[list[str], list[str]]:
@@ -2627,7 +2646,11 @@ def run_searches() -> tuple[list[Record], dict[str, list[Record]], dict[str, int
     with open(OUTPUT_DIR / "queries.json", "w", encoding="utf-8") as f:
         json.dump(queries, f, indent=2)
     with open(OUTPUT_DIR / "queries.txt", "w", encoding="utf-8") as f:
+        # queries.txt is a human copy-paste file: only emit real query strings,
+        # not the "_search_*" metadata keys (those stay in queries.json).
         for db, q in queries.items():
+            if db.startswith("_"):
+                continue
             f.write(f"--- {db} ---\n{q}\n\n")
     log.info(f"Run ID: {RUN_ID}")
     log.info(f"Output: {OUTPUT_DIR.resolve()}")

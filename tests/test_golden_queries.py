@@ -59,10 +59,17 @@ def test_golden_queries_match(mode, db):
 
     Safety net for issue #8's refactoring: externalizing the term sets to
     YAML must not have changed any query output.
+
+    ``update``/``full`` configs use the dynamic end date ``"today"``, so we
+    pin the date to the golden reference's recorded ``_search_end_date`` to
+    keep the test deterministic on any day the suite runs.
     """
-    config = load_search_config(CONFIG_DIR / f"{mode}.yaml")
-    query = BUILDERS[db](config)
     golden = _load_golden(mode)
+    config = load_search_config(
+        CONFIG_DIR / f"{mode}.yaml",
+        date_end_override=golden["_search_end_date"],
+    )
+    query = BUILDERS[db](config)
     assert query == golden[db], f"Query mismatch for mode={mode!r}, db={db!r}"
 
 
