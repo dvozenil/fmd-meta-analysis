@@ -88,6 +88,42 @@ blocks:
   block_c: null                    # optional 3rd block
 ```
 
+### Exclusion blocks (NOT)
+
+The YAML schema supports an optional **negated** block named `exclude` under
+`blocks:`. When set, its terms are appended **AFTER all AND blocks** as a
+per-database NOT clause. This is useful when you want to subtract a modality
+already covered by another review (e.g. `"functional MRI"` / `"fMRI"`) or a
+confounder disease (e.g. `"Huntington disease"`).
+
+```yaml
+term_sets:
+  # ... block_a and block_b term_sets as above ...
+  exclude_terms:
+    - "functional MRI"
+    - "fMRI"
+    - "Huntington disease"
+
+blocks:
+  block_a: "fnd_terms"
+  block_b: "imaging_terms"
+  block_c: null
+  exclude: "exclude_terms"   # optional; null or absent = no NOT clause
+```
+
+Per-database rendering of the example above:
+
+| Database | Exclusion syntax |
+|---|---|
+| **PubMed** | ` NOT ("functional MRI"[tiab] OR "fMRI"[tiab] OR "Huntington disease"[tiab])` |
+| **Web of Science** | ` AND NOT TS=("functional MRI" OR "fMRI" OR "Huntington disease")` |
+| **Europe PMC** | ` NOT (TITLE_ABS:("functional MRI" OR "fMRI" OR "Huntington disease"))` |
+| **Scopus** | ` AND NOT TITLE-ABS-KEY("functional MRI" OR "fMRI" OR "Huntington disease")` |
+| **EBSCO / PsycINFO** | ` AND NOT (TI (...) OR AB (...) OR SU (...))` |
+
+When `exclude` is unset (or `null`), queries are **byte-identical** to the
+pre-exclusion behaviour — the golden regression tests enforce this.
+
 ### Per-database syntax overrides
 
 Under `search.syntax` you can override options per database. Currently only

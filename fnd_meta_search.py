@@ -606,10 +606,15 @@ LUDWIG_DESIGN_TERMS = [
 
 @dataclass
 class SearchTermConfig:
-    """Container for search term blocks. block_c is optional (3-block queries)."""
+    """Container for search term blocks. block_c is optional (3-block queries).
+
+    ``exclude`` is an optional negated term block appended AFTER all AND
+    blocks as a per-database NOT clause (follow-up to issue #8).
+    """
     block_a: list[str]
     block_b: list[str]
     block_c: list[str] | None = None
+    exclude: list[str] | None = None
 
 
 _DEFAULT_PUBMED_MESH_FND = ["Conversion Disorder", "Dissociative Disorders"]
@@ -693,11 +698,15 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
     block_c = None
     if blocks.get("block_c"):
         block_c = _term_set_lookup(term_sets, blocks["block_c"])
+    exclude = None
+    if blocks.get("exclude"):
+        exclude = _term_set_lookup(term_sets, blocks["exclude"])
 
     return SearchConfig(
         block_a=_term_set_lookup(term_sets, blocks.get("block_a")),
         block_b=_term_set_lookup(term_sets, blocks.get("block_b")),
         block_c=block_c,
+        exclude=exclude,
         mode=str(search.get("mode", "custom")),
         date_start=_yaml_start(search.get("date_start")),
         date_end=date_end,
@@ -750,6 +759,7 @@ def _active_search_config() -> SearchConfig:
                 block_a=legacy.block_a,
                 block_b=legacy.block_b,
                 block_c=legacy.block_c,
+                exclude=legacy.exclude,
                 mode=SEARCH_MODE or "custom",
                 date_start=SEARCH_START_YEAR,
                 date_end=SEARCH_END_DATE or "today",
@@ -855,6 +865,9 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
         if config.block_c:
             design_block = _build_pubmed_text_block(config.block_c)
             query += f" AND ({design_block})"
+        if config.exclude:
+            exclude_block = _build_pubmed_text_block(config.exclude)
+            query += f" NOT ({exclude_block})"
         return f"{query} {_date_filter_pubmed(config)}"
 
     mesh_fnd = " OR ".join(f'"{t}"[MeSH]' for t in config.pubmed_mesh_terms_fnd)
@@ -883,7 +896,11 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
         'NOT ("Editorial"[Publication Type] OR "Letter"[Publication Type] '
         'OR "Comment"[Publication Type])'
     ) if config.pubmed_use_exclusions else ""
-    return f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}"
+    exclude_clause = ""
+    if config.exclude:
+        exclude_block = _build_pubmed_text_block(config.exclude)
+        exclude_clause = f" NOT ({exclude_block})"
+    return f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}{exclude_clause}"
 
 
 def build_wos_query(config: SearchConfig | None = None) -> str:
@@ -900,6 +917,9 @@ def build_wos_query(config: SearchConfig | None = None) -> str:
     if config.block_c:
         design = _build_wos_phrase_or_block(config.block_c)
         query += f' AND TS=({design})'
+    if config.exclude:
+        exclude = _build_wos_phrase_or_block(config.exclude)
+        query += f' AND NOT TS=({exclude})'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -916,6 +936,9 @@ def build_europepmc_query(config: SearchConfig | None = None) -> str:
     if config.block_c:
         design = _build_europepmc_phrase_or_block(config.block_c)
         query += f' AND (TITLE_ABS:({design}))'
+    if config.exclude:
+        exclude = _build_europepmc_phrase_or_block(config.exclude)
+        query += f' NOT (TITLE_ABS:({exclude}))'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -947,6 +970,9 @@ def build_ebsco_psycinfo_query(config: SearchConfig | None = None) -> str:
     if config.block_c:
         design = _build_ebsco_tiabsu_block(config.block_c)
         query += f" AND ({design})"
+    if config.exclude:
+        exclude = _build_ebsco_tiabsu_block(config.exclude)
+        query += f" AND NOT {exclude}"
     return f"{query}{lang_part}{date_part}"
 
 
@@ -963,6 +989,9 @@ def build_scopus_query(config: SearchConfig | None = None) -> str:
     if config.block_c:
         design = _build_scopus_phrase_or_block(config.block_c)
         query += f' AND (TITLE-ABS-KEY({design}))'
+    if config.exclude:
+        exclude = _build_scopus_phrase_or_block(config.exclude)
+        query += f' AND NOT TITLE-ABS-KEY({exclude})'
     return f'{query}{date_part}{lang_part}'
 
 

@@ -60,10 +60,19 @@ term_sets:
     - "control"
     - "controlled"
     - "case-control"
+  # Optional negated block appended AFTER all AND blocks as a per-database
+  # NOT clause (follow-up to issue #8). E.g. exclude "functional MRI"/"fMRI"
+  # when subtracting a modality already covered by another review, or a
+  # confounder disease like Huntington disease (Huntington's).
+  exclude_terms:
+    - "functional MRI"
+    - "fMRI"
+    - "Huntington disease"
 
 # Block assembly — which term_sets form each block of the AND query. A null
-# block_c means a 2-block query (A AND B).
+# block_c means a 2-block query (A AND B). A null exclude means no NOT clause.
 blocks:
   block_a: "fnd_terms"                      # REQUIRED — key into term_sets
   block_b: "imaging_terms"                  # REQUIRED — key into term_sets
   block_c: null                             # optional 3rd block (e.g. "design_terms")
+  exclude: "exclude_terms"                  # optional negated block (e.g. "exclude_terms")
