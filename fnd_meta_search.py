@@ -1697,8 +1697,13 @@ def _import_ebsco_csv(path: Path) -> list[Record]:
                 # Normalize to a single source_db label
                 source_db = "psycinfo"
 
-                # Accession number as stable ID
-                an = row.get("an", "")
+                # Accession number as stable ID — EBSCO exports vary:
+                # "an" (legacy) / "accessionNumber" (current metadata CSV).
+                # Empty string would collapse every record to one "duplicate"
+                # in the cross-file dedup, so fall back to the plink URL
+                # (also stable+unique per record) when both are missing.
+                an = (row.get("an") or row.get("accessionNumber")
+                      or row.get("plink") or "").strip()
 
                 # Title
                 title = row.get("title", "") or ""
