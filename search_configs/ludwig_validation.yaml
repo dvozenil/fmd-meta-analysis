@@ -1,0 +1,35 @@
+project:
+  name: "fnd-neuroimaging-ludwig_validation"
+  description: "FND neuroimaging meta-analysis search (ludwig_validation)"
+  version: "1.0"
+
+search:
+  mode: "ludwig_validation"
+  date_start: "inception"        # "inception" or YYYY
+  date_end: "2016/11/04"          # YYYY/MM/DD or "today"
+  language_filter: false    # true=English-only
+
+  syntax:
+    pubmed:
+      use_mesh: false
+      use_exclusions: false
+      use_human_filter: false
+    mri_fallback: false
+
+term_sets:
+  fnd_terms:
+      - "psychogenic"
+      - "conversion disorder"
+      - "non-epileptic"
+  imaging_terms:
+      - "abuse"
+      - "life event"
+  design_terms:
+      - "control"
+      - "controlled"
+      - "case-control"
+
+blocks:
+  block_a: "fnd_terms"
+  block_b: "imaging_terms"
+  block_c: design_terms

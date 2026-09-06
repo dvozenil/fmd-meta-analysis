@@ -1,0 +1,78 @@
+# ============================================================================
+# FND Neuroimaging Meta-Analysis — Search Configuration Template
+# ============================================================================
+# This file documents every option the YAML search config supports. To create
+# a new search, copy it to search_configs/<name>.yaml (or anywhere) and pass
+# it with `--terms <path>`.
+#
+# Usage:  python fnd_meta_search.py --terms search_configs/template.yaml
+#         python fnd_meta_search.py --terms <path> --db pubmed --db scopus
+#
+# All keys are optional unless marked REQUIRED. Unset options fall back to
+# the defaults shown in fnd_meta_search.SearchConfig.
+
+project:
+  name: "fnd-neuroimaging-custom"          # REQUIRED — human/short label
+  description: "Custom FND neuroimaging meta-analysis search"  # optional
+  version: "1.0"                            # optional config version
+
+search:
+  mode: "custom"                            # informational; matches YAML filename
+  date_start: "inception"                   # "inception" (=1800) or an INTEGER year e.g. 2015
+  date_end: "today"                         # YYYY/MM/DD e.g. "2026/07/31" or "today"
+  language_filter: true                     # true = restrict to English; false = no language
+                                            #   restriction (validation modes use false). Applies
+                                            #   to WoS, Europe PMC, Scopus, EBSCO. (PubMed's
+                                            #   non-MeSH branch never adds a language filter.)
+
+  # Per-database syntax overrides (all keys optional)
+  syntax:
+    pubmed:
+      use_mesh: true                        # true = wrap terms in MeSH descriptors (production);
+                                            #   false = plain [tiab] text-block query (validation).
+      mesh_terms_fnd:                       # MeSH heading(s) OR'd ahead of the FND text block
+        - "Conversion Disorder"
+        - "Dissociative Disorders"
+      mesh_terms_imaging:                   # MeSH heading(s) OR'd ahead of the imaging text block
+        - "Neuroimaging"
+        - "Magnetic Resonance Imaging"
+        - "Diffusion Tensor Imaging"
+        - "Positron-Emission Tomography"
+        - "Tomography, Emission-Computed, Single-Photon"
+      use_exclusions: true                  # NOT (Editorial OR Letter OR Comment)
+      use_human_filter: true                # ("humans"[MeSH Terms])
+    mri_fallback: false                     # true = add 'OR ("magnetic" AND "resonance" AND
+                                            #   "imaging")' to the imaging block in every DB
+                                            #   (Boeckle os_validation quirk). Default false.
+
+# Named term lists. block_a / block_b are combined with AND. Terms are quoted
+# verbatim in every database syntax, so include any truncation wildcards ('*')
+# exactly as they should be searched.
+term_sets:
+  fnd_terms:                                # REQUIRED — block_a source
+    - "functional neurological disorder*"
+    - "conversion disorder*"
+  imaging_terms:                            # REQUIRED — block_b source
+    - "neuroimaging"
+    - "brain imaging"
+  # Optional third block (e.g. study-design terms for a 3-block AND query).
+  design_terms:
+    - "control"
+    - "controlled"
+    - "case-control"
+  # Optional negated block appended AFTER all AND blocks as a per-database
+  # NOT clause (follow-up to issue #8). E.g. exclude "functional MRI"/"fMRI"
+  # when subtracting a modality already covered by another review, or a
+  # confounder disease like Huntington disease (Huntington's).
+  exclude_terms:
+    - "functional MRI"
+    - "fMRI"
+    - "Huntington disease"
+
+# Block assembly — which term_sets form each block of the AND query. A null
+# block_c means a 2-block query (A AND B). A null exclude means no NOT clause.
+blocks:
+  block_a: "fnd_terms"                      # REQUIRED — key into term_sets
+  block_b: "imaging_terms"                  # REQUIRED — key into term_sets
+  block_c: null                             # optional 3rd block (e.g. "design_terms")
+  exclude: "exclude_terms"                  # optional negated block (e.g. "exclude_terms")

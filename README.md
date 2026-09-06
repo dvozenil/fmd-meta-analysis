@@ -39,6 +39,7 @@ docs/
   repo_cleanup_and_next_steps.md      # Current status and roadmap
   methods_paper_plan.md               # Model-comparison methods paper design
   llm_screening_protocol.md           # Screening execution protocol
+  reusing-the-pipeline.md             # Guide: configure/run searches via YAML + --db
   references/                         # Literature reviews and source PDFs
 tests/
   test_scopus_parse.py          # Scopus parser unit tests
@@ -98,7 +99,22 @@ python fnd_meta_search.py --full --auto
 # Choose deduplication algorithm (default: asysd)
 python fnd_meta_search.py --full --dedup-algo simple   # DOI + title-hash only
 python fnd_meta_search.py --full --dedup-algo asysd    # ASySD-class (default)
+
+# Use a custom YAML config instead of a mode flag
+python fnd_meta_search.py --terms my_project.yaml --auto
+
+# Restrict to specific databases (repeatable); default is all four
+python fnd_meta_search.py --terms my_project.yaml --db pubmed --db europepmc --no-dedup
 ```
+
+> **New: YAML search configs + `--db` selection (issue #8).** Since issue #8,
+> the fixed term lists that used to live in `fnd_meta_search.py` are
+> externalized into YAML files under `search_configs/`, and the mode flags are
+> thin wrappers that load them. You can supply your own config with
+> `--terms <path>` (takes precedence over the mode flags) and narrow which
+> databases execute with the repeatable `--db` flag. See
+> [docs/reusing-the-pipeline.md](docs/reusing-the-pipeline.md) for the full
+> config schema, per-database syntax overrides, and a worked example.
 
 ### Setup
 
