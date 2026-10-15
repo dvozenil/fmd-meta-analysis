@@ -641,6 +641,13 @@ class SearchConfig(SearchTermConfig):
         default_factory=lambda: list(_DEFAULT_PUBMED_MESH_IMAGING))
     pubmed_use_exclusions: bool = True
     pubmed_use_human_filter: bool = True
+    # Scope of the exclude (NOT) block: "default" searches the DB's default
+    # fields (tiab / TITLE_ABS / TITLE-ABS-KEY / TI-AB-SU / TS=); "title"
+    # restricts the NOT clause to the title field only, mirroring strategies
+    # (e.g. Web of Science TI=) that exclude reviews/meta-analyses/case
+    # reports by title to avoid dropping records that merely mention them
+    # in the abstract.
+    exclude_scope: str = "default"
 
 
 def _term_set_lookup(term_sets: dict, key: str | None) -> list[str]:
@@ -701,6 +708,12 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
     exclude = None
     if blocks.get("exclude"):
         exclude = _term_set_lookup(term_sets, blocks["exclude"])
+    exclude_scope = str(syntax.get("exclude_scope", "default")).strip().lower()
+    if exclude_scope not in ("default", "title"):
+        raise ValueError(
+            f"Invalid search.syntax.exclude_scope {exclude_scope!r}; "
+            "must be 'default' or 'title'"
+        )
 
     return SearchConfig(
         block_a=_term_set_lookup(term_sets, blocks.get("block_a")),
@@ -719,6 +732,7 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
             pubmed_syntax.get("mesh_terms_imaging", _DEFAULT_PUBMED_MESH_IMAGING)),
         pubmed_use_exclusions=bool(pubmed_syntax.get("use_exclusions", True)),
         pubmed_use_human_filter=bool(pubmed_syntax.get("use_human_filter", True)),
+        exclude_scope=exclude_scope,
     )
 
 
@@ -826,10 +840,26 @@ def _build_wos_phrase_or_block(terms: list[str]) -> str:
 
 
 def _build_europepmc_phrase_or_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"' for t in terms)
+    """Build an EPMC OR block of quoted phrases.
+
+    Europe PMC (Lucene) breaks wildcard-in-quotes: ``TITLE_ABS:"childhood
+    maltreat*"`` returns 0 hits while the unquoted form
+    ``TITLE_ABS:childhood maltreat*`` expands the stem. Verified
+    empirically 2026-10-15. Terms containing '*' are therefore rendered
+    UNQUOTED. NOTE the semantic difference: an unquoted multiword term is
+    Lucene bare-term syntax — an AND of the words with stem matching on the
+    truncated word, i.e. broader than an exact phrase.
+    """
+    return " OR ".join(
+        t if "*" in t else f'"{t}"' for t in terms
+    )
 
 
 def _build_scopus_phrase_or_block(terms: list[str]) -> str:
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _build_ebsco_phrase_or(terms: list[str]) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
@@ -841,12 +871,18 @@ def _build_ebsco_tiabsu_block(terms: list[str]) -> str:
     coverage than KW (author keywords only) and narrower than TX
     (All Text, which hits full text and returns ~88% noise).
     """
-    phrase_or = " OR ".join(f'"{t}"' for t in terms)
+    phrase_or = _build_ebsco_phrase_or(terms)
     return f'(TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))'
 
 
-def _build_pubmed_text_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"[tiab]' for t in terms)
+def _build_pubmed_text_block(terms: list[str], field: str = "tiab") -> str:
+    return " OR ".join(f'"{t}"[{field}]' for t in terms)
+
+
+def _pubmed_exclude_block(config: SearchConfig) -> str:
+    """Exclude block for PubMed: [tiab] by default, [ti] with title scope."""
+    field = "ti" if config.exclude_scope == "title" else "tiab"
+    return _build_pubmed_text_block(config.exclude, field=field)
 
 
 def build_pubmed_query(config: SearchConfig | None = None) -> str:
@@ -866,7 +902,7 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
             design_block = _build_pubmed_text_block(config.block_c)
             query += f" AND ({design_block})"
         if config.exclude:
-            exclude_block = _build_pubmed_text_block(config.exclude)
+            exclude_block = _pubmed_exclude_block(config)
             query += f" NOT ({exclude_block})"
         return f"{query} {_date_filter_pubmed(config)}"
 
@@ -898,7 +934,7 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
     ) if config.pubmed_use_exclusions else ""
     exclude_clause = ""
     if config.exclude:
-        exclude_block = _build_pubmed_text_block(config.exclude)
+        exclude_block = _pubmed_exclude_block(config)
         exclude_clause = f" NOT ({exclude_block})"
     return f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}{exclude_clause}"
 
@@ -919,7 +955,8 @@ def build_wos_query(config: SearchConfig | None = None) -> str:
         query += f' AND TS=({design})'
     if config.exclude:
         exclude = _build_wos_phrase_or_block(config.exclude)
-        query += f' AND NOT TS=({exclude})'
+        field = "TI" if config.exclude_scope == "title" else "TS"
+        query += f' AND NOT {field}=({exclude})'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -938,7 +975,8 @@ def build_europepmc_query(config: SearchConfig | None = None) -> str:
         query += f' AND (TITLE_ABS:({design}))'
     if config.exclude:
         exclude = _build_europepmc_phrase_or_block(config.exclude)
-        query += f' NOT (TITLE_ABS:({exclude}))'
+        field = "TITLE" if config.exclude_scope == "title" else "TITLE_ABS"
+        query += f' NOT ({field}:({exclude}))'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -971,8 +1009,12 @@ def build_ebsco_psycinfo_query(config: SearchConfig | None = None) -> str:
         design = _build_ebsco_tiabsu_block(config.block_c)
         query += f" AND ({design})"
     if config.exclude:
-        exclude = _build_ebsco_tiabsu_block(config.exclude)
-        query += f" AND NOT {exclude}"
+        if config.exclude_scope == "title":
+            exclude = _build_ebsco_phrase_or(config.exclude)
+            query += f" AND NOT TI ({exclude})"
+        else:
+            exclude = _build_ebsco_tiabsu_block(config.exclude)
+            query += f" AND NOT {exclude}"
     return f"{query}{lang_part}{date_part}"
 
 
@@ -991,7 +1033,10 @@ def build_scopus_query(config: SearchConfig | None = None) -> str:
         query += f' AND (TITLE-ABS-KEY({design}))'
     if config.exclude:
         exclude = _build_scopus_phrase_or_block(config.exclude)
-        query += f' AND NOT TITLE-ABS-KEY({exclude})'
+        if config.exclude_scope == "title":
+            query += f' AND NOT TITLE({exclude})'
+        else:
+            query += f' AND NOT TITLE-ABS-KEY({exclude})'
     return f'{query}{date_part}{lang_part}'
 
 
