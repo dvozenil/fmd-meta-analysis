@@ -31,7 +31,12 @@ blocks (block_a/b/c and the exclude block) only; other builders untouched.
 import pytest
 from pathlib import Path
 
+import urllib.parse
+
+import fnd_meta_search
+import requests as fms_requests
 from fnd_meta_search import (
+    EuropePMCClient,
     SearchConfig,
     build_pubmed_query,
     build_wos_query,
@@ -540,3 +545,49 @@ def test_searchconfig_exclude_scope_field_default():
     assert cfg.exclude_scope == "default"
     q = build_pubmed_query(cfg)
     assert 'NOT ("z"[tiab])' in q
+
+
+# ---------------------------------------------------------------------------
+# EPMC GET request-line length: parentheses must NOT be percent-encoded
+# (verified live 2026-10-19: default encoding pushed Martin's v2 draft query
+# to ~7.9k encoded bytes -> bare HTTP 400; parens-raw form = 3,017 hits)
+# ---------------------------------------------------------------------------
+
+def test_epmc_encode_param_keeps_parens_raw():
+    enc = EuropePMCClient._encode_param
+    # parens and asterisks stay raw; quotes must remain percent-encoded.
+    # '/' and ':' encode to %2F/%3A — harmless (servlets decode them), only
+    # parens/quotes/spaces affect the request-line budget.
+    assert enc("(functional tremor*)") == "(functional+tremor*)"
+    assert enc('"ME/CFS"') == "%22ME%2FCFS%22"
+    assert enc("a b") == "a+b"
+
+
+def test_epmc_encode_param_saves_request_line_length():
+    # the whole multi-wildcard exposure block must encode shorter than with
+    # parens percent-encoded — that delta is what crosses the ~8KB ceiling
+    block = " OR ".join(f"(functional motor disorder*)" for _ in range(100))
+    default_len = len(urllib.parse.urlencode({"q": block}))
+    ours_len = len("q=" + EuropePMCClient._encode_param(block))
+    assert ours_len < default_len - 300  # ~2 bytes saved per paren
+
+
+def test_epmc_client_builds_unencoded_paren_url(monkeypatch):
+    # capture the URL the client actually GETs; assert parens arrive raw
+    captured = {}
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return {"resultList": {"result": []}}
+    def fake_get(url, timeout=None, **kw):
+        captured["url"] = url
+        return FakeResp()
+    monkeypatch.setattr(fms_requests, "get", fake_get)
+    cfg = SearchConfig(
+        block_a=["functional motor disorder*", "functional tremor*"],
+        block_b=["child*"],
+        date_start=None, date_end="2026/12/31",
+    )
+    EuropePMCClient().search(build_europepmc_query(cfg), page_size=1)
+    url = captured["url"]
+    assert "TITLE_ABS%3A%28" not in url        # parens NOT percent-encoded
+    assert "TITLE_ABS%3A((functional" in url   # they arrive raw (colon is %3A, harmless)

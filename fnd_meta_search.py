@@ -49,6 +49,7 @@ import logging
 import os
 import re
 import time
+import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import wraps
@@ -1208,6 +1209,23 @@ class EuropePMCClient:
 
     BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 
+    @staticmethod
+    def _encode_param(v: Any) -> str:
+        """Encode one query-string parameter for the EPMC REST GET.
+
+        requests' default param encoding percent-encodes parentheses
+        (``(`` -> ``%28``, 3 bytes each), and EPMC's Tomcat front-end rejects
+        request lines above ~8KB with a bare HTTP 400 (URL-length ceiling,
+        verified empirically 2026-10-19). Paren-heavy Lucene queries — e.g.
+        per-term parenthesized wildcard blocks — can exceed it, so ``(``,
+        ``)`` and ``*`` are sent raw. Raw double quotes are themselves
+        rejected by Tomcat, so quotes stay percent-encoded (``%22``).
+        ``quote()`` emits ``%20`` for spaces (3 bytes each) while form
+        encoding uses ``+`` (1 byte), which servlet containers decode as
+        space — convert back to keep the request line short.
+        """
+        return urllib.parse.quote(str(v), safe="()*").replace("%20", "+")
+
     @retry()
     def search(self, query: str, page_size: int = 1000) -> list[Record]:
         log.info(f"Europe PMC query: {query[:200]}...")
@@ -1221,7 +1239,16 @@ class EuropePMCClient:
                 "cursorMark": cursor,
                 "resultType": "core",
             }
-            r = requests.get(self.BASE, params=params, timeout=60)
+            # Build the URL manually: requests' default param encoding
+            # percent-encodes parentheses (x3 bytes), and EPMC's REST GET
+            # rejects request lines above ~8KB with a bare HTTP 400. Paren-
+            # heavy queries (per-term parenthesized wildcard blocks) can blow
+            # past the limit; sending ( ) * raw keeps the request within it.
+            # Raw double quotes are themselves rejected by Tomcat, so quotes
+            # stay percent-encoded (%22).
+            qs = "&".join(f"{k}={self._encode_param(v)}" for k, v in params.items())
+            url = f"{self.BASE}?{qs}"
+            r = requests.get(url, timeout=60)
             r.raise_for_status()
             data = r.json()
             hits = data.get("resultList", {}).get("result", [])
