@@ -643,10 +643,14 @@ class SearchConfig(SearchTermConfig):
     pubmed_use_human_filter: bool = True
     # Scope of the exclude (NOT) block: "default" searches the DB's default
     # fields (tiab / TITLE_ABS / TITLE-ABS-KEY / TI-AB-SU / TS=); "title"
-    # restricts the NOT clause to the title field only, mirroring strategies
+    # restricts ONLY the NOT clause to the title field, mirroring strategies
     # (e.g. Web of Science TI=) that exclude reviews/meta-analyses/case
     # reports by title to avoid dropping records that merely mention them
-    # in the abstract.
+    # in the abstract. This asymmetry is DELIBERATE (WoS-mirroring
+    # semantics): inclusion blocks keep their per-builder default scope
+    # (EPMC TITLE_ABS, PubMed [tiab], WoS TS=, Scopus TITLE-ABS-KEY, EBSCO
+    # TI/AB/SU) — TI-scoped exclusions + TS-scoped topic search. Pinned by
+    # tests/test_exclude_scope_and_wildcards.py (positive-block scope tests).
     exclude_scope: str = "default"
 
 
@@ -842,16 +846,30 @@ def _build_wos_phrase_or_block(terms: list[str]) -> str:
 def _build_europepmc_phrase_or_block(terms: list[str]) -> str:
     """Build an EPMC OR block of quoted phrases.
 
-    Europe PMC (Lucene) breaks wildcard-in-quotes: ``TITLE_ABS:"childhood
-    maltreat*"`` returns 0 hits while the unquoted form
-    ``TITLE_ABS:childhood maltreat*`` expands the stem. Verified
-    empirically 2026-10-15. Terms containing '*' are therefore rendered
-    UNQUOTED. NOTE the semantic difference: an unquoted multiword term is
+    Europe PMC (Lucene) does not stem-expand a wildcard inside quotes, so a
+    quoted wildcard is matched near-literally. The result is term-dependent:
+    some quoted wildcards return 0 hits (``TITLE_ABS:"childhood maltreat*"``
+    = 0 vs 15,714 unquoted) while others still match a handful of literal-ish
+    records (``TITLE_ABS:"functional/dissociative seizure*"`` = 8 vs 203
+    unquoted). Verified empirically 2026-10-15. Terms containing '*' are
+    therefore rendered UNQUOTED.
+
+    Each unquoted wildcard term is individually parenthesized. This is not
+    cosmetic: inside a field group Lucene parses an unparenthesized multiword
+    bare term as an implicit AND across its words, so an OR chain of such
+    terms collapses toward 0 hits (verified live 2026-10-15: a 10-term
+    ``TITLE_ABS:(functional motor disorder* OR functional tremor* OR ...)``
+    group returned 174 hits, while the parenthesized equivalent
+    ``TITLE_ABS:((functional motor disorder*) OR (functional tremor*) OR ...)``
+    returned 49,047). Parenthesizing each term makes the OR group behave as
+    an OR group.
+
+    NOTE the semantic difference that remains: an unquoted multiword term is
     Lucene bare-term syntax — an AND of the words with stem matching on the
     truncated word, i.e. broader than an exact phrase.
     """
     return " OR ".join(
-        t if "*" in t else f'"{t}"' for t in terms
+        f"({t})" if "*" in t else f'"{t}"' for t in terms
     )
 
 
@@ -975,6 +993,8 @@ def build_europepmc_query(config: SearchConfig | None = None) -> str:
         query += f' AND (TITLE_ABS:({design}))'
     if config.exclude:
         exclude = _build_europepmc_phrase_or_block(config.exclude)
+        # exclude_scope is exclusion-only by design (WoS-mirroring): the
+        # positive blocks above stay TITLE_ABS. Do NOT title-scope them.
         field = "TITLE" if config.exclude_scope == "title" else "TITLE_ABS"
         query += f' NOT ({field}:({exclude}))'
     return f'{query}{lang_part}{date_part}'

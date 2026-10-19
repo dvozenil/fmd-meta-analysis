@@ -44,12 +44,21 @@ search:
     mri_fallback: false                     # true = add 'OR ("magnetic" AND "resonance" AND
                                             #   "imaging")' to the imaging block in every DB
                                             #   (Boeckle os_validation quirk). Default false.
-    exclude_scope: "default"                # scope of the NOT clause built from blocks.exclude:
+    exclude_scope: "default"                # Scope of the NOT clause built from
+                                            #   blocks.exclude. IMPORTANT — this knob is
+                                            #   EXCLUSION-ONLY:
                                             #   "default" = the DB's default fields ([tiab],
                                             #     TITLE_ABS, TITLE-ABS-KEY, TI/AB/SU, TS=);
-                                            #   "title" = title field ONLY (PubMed [ti],
-                                            #     EPMC TITLE:, Scopus TITLE(), EBSCO TI (),
-                                            #     WoS TI=). Use "title" when translating a
+                                            #   "title" = scopes ONLY the exclusion block to
+                                            #     title (PubMed [ti], EPMC TITLE:,
+                                            #     Scopus TITLE(), EBSCO TI (), WoS TI=).
+                                            #   INCLUDED (positive) blocks keep their default
+                                            #   field scope in every builder (EPMC TITLE_ABS,
+                                            #   PubMed [tiab], WoS TS=, Scopus TITLE-ABS-KEY,
+                                            #   EBSCO TI/AB/SU) — they are NEVER title-scoped.
+                                            #   This asymmetry is deliberate WoS-mirroring
+                                            #   semantics: TI-scoped exclusions + TS-scoped
+                                            #   topic search. Use "title" when translating a
                                             #   strategy that excludes reviews/meta-analyses/
                                             #   case reports by title — an abstract-scoped NOT
                                             #   drops records that merely mention those words
@@ -58,12 +67,18 @@ search:
 
 # Named term lists. block_a / block_b are combined with AND. Terms are quoted
 # verbatim in every database syntax, so include any truncation wildcards ('*')
-# exactly as they should be searched. EXCEPTION — Europe PMC: a '*' inside
-# quotes returns 0 hits (verified 2026-10-15: TITLE_ABS:"childhood maltreat*"
-# = 0 vs 4,074 exact / 15,714 unquoted), so the EPMC builder renders
-# wildcard terms UNQUOTED automatically. NOTE the semantic difference: an
-# unquoted multiword term is Lucene bare-term syntax — an AND of the words
-# with stem matching on the truncated word, i.e. BROADER than an exact phrase.
+# exactly as they should be searched. EXCEPTION — Europe PMC: a wildcard
+# inside quotes is NOT stem-expanded (near-literal matching, term-dependent:
+# TITLE_ABS:"childhood maltreat*" = 0 hits vs 15,714 unquoted, but
+# TITLE_ABS:"functional/dissociative seizure*" = 8 vs 203 unquoted), so the
+# EPMC builder renders wildcard terms UNQUOTED and individually parenthesized:
+#   (functional motor disorder*) OR (functional tremor*)
+# The per-term parentheses are REQUIRED: an unparenthesized OR chain of
+# multiword bare terms is parsed by Lucene as cross-term implicit ANDs and
+# collapses toward 0 hits (a 10-term group returns 174 instead of 49,047).
+# NOTE the semantic difference: an unquoted multiword term is Lucene bare-term
+# syntax — an AND of the words with stem matching on the truncated word, i.e.
+# BROADER than an exact phrase.
 term_sets:
   fnd_terms:                                # REQUIRED — block_a source
     - "functional neurological disorder*"
