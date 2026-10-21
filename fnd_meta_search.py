@@ -1105,9 +1105,13 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
         exposure_terms, adjacency_block = _pubmed_block_b_terms(config)
         imaging_block = _build_pubmed_text_block(exposure_terms)
         if adjacency_block:
+            # Branch on the POST-COVERAGE term list (exposure_terms), not the
+            # raw config.block_b: when the adjacency groups cover every pair,
+            # exposure_terms is empty and the OR arm must be dropped entirely.
+            # Testing the raw list here renders a malformed "( OR (...))".
             imaging_block = (
                 f"({imaging_block} OR ({adjacency_block}))"
-                if imaging_terms else f"({adjacency_block})"
+                if exposure_terms else f"({adjacency_block})"
             )
         if config.mri_fallback:
             imaging_block += (

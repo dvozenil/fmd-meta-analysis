@@ -262,6 +262,74 @@ def test_pubmed_query_parentheses_balanced_with_adjacency(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Feature 1 regression: ALL block_b pairs adjacency-covered (PR #12 C1).
+#
+# The guard around the OR arm must test the POST-COVERAGE term list. Testing
+# the raw config.block_b (non-empty here) leaves an empty left OR operand and
+# renders the malformed "( OR ((...)))" form for PubMed.
+# ---------------------------------------------------------------------------
+
+ALL_COVERED_YAML = """\
+term_sets:
+  fnd_terms:
+    - "conversion disorder*"
+  exposure_terms:
+    - "child* abus*"
+    - "child* maltreat*"
+
+blocks:
+  block_a: "fnd_terms"
+  block_b: "exposure_terms"
+
+search:
+  syntax:
+    pubmed:
+      use_mesh: false
+      adjacency_groups:
+        - group_a: ["child*"]
+          group_b: ["abus*", "maltreat*"]
+"""
+
+
+def _all_covered_config(tmp_path):
+    config = _load(tmp_path, ALL_COVERED_YAML)
+    # precondition: the groups cover EVERY enumerated pair, leaving the OR
+    # block empty while config.block_b itself stays non-empty
+    assert config.block_b == ["child* abus*", "child* maltreat*"]
+    assert _pubmed_adjacency_pairs_covered(config) == set(config.block_b)
+    return config
+
+
+def test_pubmed_all_pairs_covered_has_no_empty_or_operand(tmp_path):
+    q = build_pubmed_query(_all_covered_config(tmp_path))
+    # the C1 symptom: an empty left OR operand
+    assert "( OR (" not in q
+    assert "OR ()" not in q
+    assert "()" not in q
+    # the adjacency AND block is still rendered (no recall loss)
+    assert ('("child*"[tiab]) AND ("abus*"[tiab] OR "maltreat*"[tiab])'
+            in q)
+    # ... and the covered enumerated pairs are gone
+    assert '"child* abus*"[tiab]' not in q
+    assert '"child* maltreat*"[tiab]' not in q
+    assert q.count("(") == q.count(")")
+    assert "  " not in q
+
+
+def test_pubmed_all_pairs_covered_mesh_path_has_no_empty_or_operand(tmp_path):
+    yaml_mesh = ALL_COVERED_YAML.replace("use_mesh: false", "use_mesh: true")
+    config = _load(tmp_path, yaml_mesh)
+    assert _pubmed_adjacency_pairs_covered(config) == set(config.block_b)
+    q = build_pubmed_query(config)
+    assert "( OR (" not in q
+    assert "OR ()" not in q
+    assert "()" not in q
+    assert ('("child*"[tiab]) AND ("abus*"[tiab] OR "maltreat*"[tiab])'
+            in q)
+    assert q.count("(") == q.count(")")
+
+
+# ---------------------------------------------------------------------------
 # Feature 2: Scopus loose_wildcards
 # ---------------------------------------------------------------------------
 
