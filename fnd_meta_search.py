@@ -653,6 +653,21 @@ class SearchConfig(SearchTermConfig):
     # TI/AB/SU) — TI-scoped exclusions + TS-scoped topic search. Pinned by
     # tests/test_exclude_scope_and_wildcards.py (positive-block scope tests).
     exclude_scope: str = "default"
+    # Opt-in Scopus wildcard rendering (see _scopus_render_term): unquotes
+    # single-word wildcard terms and normalizes hyphen/slash/dot inside the
+    # wildcard-carrying word. False (default) = legacy quoted rendering,
+    # byte-identical and golden-pinned.
+    scopus_loose_wildcards: bool = False
+    # PubMed-only translation of a source strategy's proximity operator
+    # (e.g. WoS NEAR/3). Each group is (stem_group_a, stem_group_b); PubMed
+    # has no proximity operator, so the enumerated pair terms in block_b that
+    # these groups cover are REPLACED by nested AND blocks:
+    #   ((a1[tiab] OR a2[tiab]) AND (b1[tiab] OR b2[tiab])) OR (next group) ...
+    # This is broader than true adjacency (co-occurrence anywhere in tiab) —
+    # the documented, accepted loss for PubMed. All other builders keep the
+    # enumerated pairs unchanged. Empty tuple = feature off (byte-identical
+    # legacy rendering, guarded by the golden suite).
+    pubmed_adjacency_groups: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
 
 
 def _term_set_lookup(term_sets: dict, key: str | None) -> list[str]:
@@ -720,6 +735,40 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
             "must be 'default' or 'title'"
         )
 
+    adjacency_groups: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
+    pubmed_syntax_cfg = syntax.get("pubmed") or {}
+    if raw_groups := pubmed_syntax_cfg.get("adjacency_groups"):
+        if not isinstance(raw_groups, list):
+            raise ValueError(
+                "search.syntax.pubmed.adjacency_groups must be a list of "
+                "{group_a: [...], group_b: [...]} mappings"
+            )
+        parsed = []
+        for i, group in enumerate(raw_groups):
+            if (
+                not isinstance(group, dict)
+                or set(group) != {"group_a", "group_b"}
+            ):
+                raise ValueError(
+                    f"adjacency_groups[{i}] must be a mapping with exactly "
+                    f"group_a and group_b stem lists, got: {group!r}"
+                )
+            stems = {}
+            for side in ("group_a", "group_b"):
+                v = group[side]
+                if (
+                    not isinstance(v, list)
+                    or not v
+                    or not all(isinstance(t, str) and t.strip() for t in v)
+                ):
+                    raise ValueError(
+                        f"adjacency_groups[{i}].{side} must be a non-empty "
+                        f"list of non-empty stem strings, got: {v!r}"
+                    )
+                stems[side] = tuple(t.strip() for t in v)
+            parsed.append((stems["group_a"], stems["group_b"]))
+        adjacency_groups = tuple(parsed)
+
     return SearchConfig(
         block_a=_term_set_lookup(term_sets, blocks.get("block_a")),
         block_b=_term_set_lookup(term_sets, blocks.get("block_b")),
@@ -738,6 +787,8 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
         pubmed_use_exclusions=bool(pubmed_syntax.get("use_exclusions", True)),
         pubmed_use_human_filter=bool(pubmed_syntax.get("use_human_filter", True)),
         exclude_scope=exclude_scope,
+        scopus_loose_wildcards=bool(syntax.get("scopus", {}).get("loose_wildcards", False)),
+        pubmed_adjacency_groups=adjacency_groups,
     )
 
 
@@ -868,14 +919,78 @@ def _build_europepmc_phrase_or_block(terms: list[str]) -> str:
     NOTE the semantic difference that remains: an unquoted multiword term is
     Lucene bare-term syntax — an AND of the words with stem matching on the
     truncated word, i.e. broader than an exact phrase.
+
+    A hyphen inside the WILDCARD-CARRYING word of an unquoted term breaks the
+    query — Lucene treats the hyphenated token as one token, and the wildcard
+    never matches (verified live 2026-10-21: ``TITLE_ABS:(pseudo-seizure*)``
+    = 0 vs 394 for ``(pseudo seizure*)``; while hyphens in NON-wildcard
+    words are analyzed fine — ``psychogenic non-epileptic seizure*`` = 749
+    for both spellings). Only the wildcard-carrying word is therefore
+    normalized: its hyphens/slashes become spaces. Non-wildcard words keep
+    their spelling byte-identically, so legacy goldens are unaffected.
+    Quoted non-wildcard terms keep hyphens/slashes — safe there
+    (``"ME/CFS"`` = 1,719 hits).
     """
-    return " OR ".join(
-        f"({t})" if "*" in t else f'"{t}"' for t in terms
+    def _normalize_wildcard_word(word: str) -> str:
+        if "*" in word:
+            return word.replace("-", " ").replace("/", " ").replace(".", " ")
+        return word
+
+    def render(t: str) -> str:
+        if "*" in t:
+            normalized = " ".join(_normalize_wildcard_word(w) for w in t.split())
+            return f"({normalized})"
+        return f'"{t}"'
+
+    return " OR ".join(render(t) for t in terms)
+
+
+def _scopus_render_term(t: str, loose_wildcards: bool = False) -> str:
+    """Render one term for a Scopus OR block.
+
+    Default (legacy, byte-identical): every term quoted verbatim.
+
+    With ``loose_wildcards=True`` (``search.syntax.scopus.loose_wildcards``),
+    terms containing ``*`` are rendered for the two wildcard hazards
+    documented by Elsevier (dev.elsevier.com/sc_search_tips.html, Elsevier
+    support "What makes a Scopus search complex"):
+      1. A quoted SINGLE-WORD wildcard term fails or returns nothing
+         (``TITLE("mou*")``); multiword quoted wildcards are fine
+         (``"criminal* insan*"`` → criminal insanity). Single-word wildcard
+         terms render UNQUOTED.
+      2. A wildcard adjacent to a hyphen/dot/slash is DROPPED (``art-*`` →
+         ``art``, ``fire-*`` → ``fire``), silently narrowing the search.
+         Hyphens/slashes/dots inside the WILDCARD-CARRYING word become
+         spaces — in loose-phrase context Scopus treats them like
+         punctuation (``heart-attack`` ≡ ``heart attack``), so this is a
+         normalization, not a semantic change. Non-wildcard words keep
+         their spelling byte-identically.
+
+    The knob is OPT-IN: the legacy quoted form is what v1 production used
+    (1,195 records retrieved) and remains the golden-pinned default; the
+    colleague-trauma v2 config enables it.
+    """
+    if not loose_wildcards or "*" not in t:
+        return f'"{t}"'
+
+    words = t.split()
+    rendered = " ".join(
+        w.replace("-", " ").replace("/", " ").replace(".", " ")
+        if "*" in w else w
+        for w in words
     )
+    # Quote by the RENDERED shape: a single word stays unquoted (quoted
+    # single-word wildcards fail); anything with a space is a loose phrase
+    # and must be quoted, otherwise Scopus ANDs the words together.
+    return rendered if " " not in rendered else f'"{rendered}"'
 
 
-def _build_scopus_phrase_or_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"' for t in terms)
+def _build_scopus_phrase_or_block(
+    terms: list[str], loose_wildcards: bool = False,
+) -> str:
+    return " OR ".join(
+        _scopus_render_term(t, loose_wildcards=loose_wildcards) for t in terms
+    )
 
 
 def _build_ebsco_phrase_or(terms: list[str]) -> str:
@@ -898,6 +1013,82 @@ def _build_pubmed_text_block(terms: list[str], field: str = "tiab") -> str:
     return " OR ".join(f'"{t}"[{field}]' for t in terms)
 
 
+# Hard limit enforced by PubMed's search backend: >256 wildcard characters in
+# one query → HTTP 500 "Cannot search because the number of wildcards (*)
+# exceeds 256" (verified deterministic 2026-10-21).
+PUBMED_MAX_WILDCARDS = 256
+
+
+def _count_wildcards(terms: list[str]) -> int:
+    """Number of '*' characters PubMed's backend would see for *terms*."""
+    return sum(t.count("*") for t in terms)
+
+
+def _pubmed_adjacency_pairs_covered(config: "SearchConfig") -> set[str]:
+    """Enumerated two-wildcard-word pairs in *config.block_b* covered by the
+    configured adjacency groups (pair words both stem-match a group side).
+
+    A pair ``child* maltreat*`` is covered iff one of its words is in
+    group_a's stems (modulo the trailing ``*``) and the other in group_b's.
+    """
+    covered: set[str] = set()
+    for ga, gb in config.pubmed_adjacency_groups:
+        sa = {s.rstrip("*").lower() for s in ga}
+        sb = {s.rstrip("*").lower() for s in gb}
+        for t in config.block_b:
+            words = t.split()
+            if len(words) != 2 or not all(w.endswith("*") for w in words):
+                continue
+            w1 = words[0].rstrip("*").lower()
+            w2 = words[1].rstrip("*").lower()
+            if (w1 in sa and w2 in sb) or (w1 in sb and w2 in sa):
+                covered.add(t)
+    return covered
+
+
+def _build_pubmed_adjacency_block(config: "SearchConfig") -> str:
+    """Render the adjacency groups as PubMed nested AND blocks.
+
+    Output shape per group: ((a-stems)[tiab]) AND ((b-stems)[tiab]); groups
+    are OR'd together. Stem order within each group is preserved as given.
+    """
+    groups = []
+    for ga, gb in config.pubmed_adjacency_groups:
+        ga_block = _build_pubmed_text_block(list(ga))
+        gb_block = _build_pubmed_text_block(list(gb))
+        groups.append(f"(({ga_block}) AND ({gb_block}))")
+    return " OR ".join(groups)
+
+
+def _pubmed_block_b_terms(config: "SearchConfig") -> tuple[list[str], str | None]:
+    """Return (exposure terms to render as an OR block, adjacency block).
+
+    Without adjacency groups: (block_b, None) — unchanged legacy rendering.
+    With them: the covered enumerated pairs are pulled out of the OR block
+    and replaced by the nested AND block, keeping PubMed under its
+    wildcard limit without changing the query's recall semantics (both
+    renderings retrieve the AND-co-occurrence superset of the pairs).
+    """
+    if not config.pubmed_adjacency_groups:
+        return list(config.block_b), None
+    covered = _pubmed_adjacency_pairs_covered(config)
+    remaining = [t for t in config.block_b if t not in covered]
+    return remaining, _build_pubmed_adjacency_block(config)
+
+
+def _warn_pubmed_wildcard_limit(query: str) -> None:
+    """Log a warning when the rendered PubMed query risks the 256-wildcard
+    HTTP-500 limit. Non-fatal: the backend is the authority; this only makes
+    the failure mode loud instead of a mid-run surprise."""
+    n = query.count("*")
+    if n > PUBMED_MAX_WILDCARDS:
+        log.warning(
+            "PubMed query has %d wildcards (limit %d) — the search backend "
+            "will reject it with HTTP 500. Reduce wildcards (e.g. via "
+            "adjacency_groups) or split the query.", n, PUBMED_MAX_WILDCARDS,
+        )
+
+
 def _pubmed_exclude_block(config: SearchConfig) -> str:
     """Exclude block for PubMed: [tiab] by default, [ti] with title scope."""
     field = "ti" if config.exclude_scope == "title" else "tiab"
@@ -911,7 +1102,13 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
     if not config.pubmed_use_mesh:
         # Validation-style text-block query (no MeSH wrapping, no language filter)
         fnd_block = _build_pubmed_text_block(fnd_terms)
-        imaging_block = _build_pubmed_text_block(imaging_terms)
+        exposure_terms, adjacency_block = _pubmed_block_b_terms(config)
+        imaging_block = _build_pubmed_text_block(exposure_terms)
+        if adjacency_block:
+            imaging_block = (
+                f"({imaging_block} OR ({adjacency_block}))"
+                if imaging_terms else f"({adjacency_block})"
+            )
         if config.mri_fallback:
             imaging_block += (
                 ' OR ("magnetic"[tiab] AND "resonance"[tiab] AND "imaging"[tiab])'
@@ -923,12 +1120,20 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
         if config.exclude:
             exclude_block = _pubmed_exclude_block(config)
             query += f" NOT ({exclude_block})"
+        _warn_pubmed_wildcard_limit(query)
         return f"{query} {_date_filter_pubmed(config)}"
 
     mesh_fnd = " OR ".join(f'"{t}"[MeSH]' for t in config.pubmed_mesh_terms_fnd)
     mesh_imaging = " OR ".join(f'"{t}"[MeSH]' for t in config.pubmed_mesh_terms_imaging)
+    exposure_terms, adjacency_block = _pubmed_block_b_terms(config)
     fnd_block = f'({mesh_fnd} OR ' + _build_pubmed_text_block(fnd_terms) + ')'
-    imaging_block = f'({mesh_imaging} OR ' + _build_pubmed_text_block(imaging_terms) + ')'
+    imaging_text = _build_pubmed_text_block(exposure_terms)
+    if adjacency_block:
+        imaging_text = (
+            f"{imaging_text} OR ({adjacency_block})"
+            if exposure_terms else adjacency_block
+        )
+    imaging_block = f'({mesh_imaging} OR {imaging_text})'
     filter_core = []
     if config.language_filter:
         filter_core.append("(English[Language])")
@@ -955,7 +1160,9 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
     if config.exclude:
         exclude_block = _pubmed_exclude_block(config)
         exclude_clause = f" NOT ({exclude_block})"
-    return f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}{exclude_clause}"
+    query = f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}{exclude_clause}"
+    _warn_pubmed_wildcard_limit(query)
+    return query
 
 
 def build_wos_query(config: SearchConfig | None = None) -> str:
@@ -1042,18 +1249,19 @@ def build_ebsco_psycinfo_query(config: SearchConfig | None = None) -> str:
 def build_scopus_query(config: SearchConfig | None = None) -> str:
     """Scopus syntax: TITLE-ABS-KEY field tag, AND/OR Boolean."""
     config = config or _active_search_config()
-    fnd = _build_scopus_phrase_or_block(config.block_a)
-    imag = _build_scopus_phrase_or_block(config.block_b)
+    loose = config.scopus_loose_wildcards
+    fnd = _build_scopus_phrase_or_block(config.block_a, loose_wildcards=loose)
+    imag = _build_scopus_phrase_or_block(config.block_b, loose_wildcards=loose)
     if config.mri_fallback:
         imag = f'{imag} OR ("magnetic" AND "resonance" AND "imaging")'
     date_part = _scopus_date_filter(config)
     lang_part = "" if not config.language_filter else " AND LANGUAGE(english)"
     query = f'(TITLE-ABS-KEY({fnd})) AND (TITLE-ABS-KEY({imag}))'
     if config.block_c:
-        design = _build_scopus_phrase_or_block(config.block_c)
+        design = _build_scopus_phrase_or_block(config.block_c, loose_wildcards=loose)
         query += f' AND (TITLE-ABS-KEY({design}))'
     if config.exclude:
-        exclude = _build_scopus_phrase_or_block(config.exclude)
+        exclude = _build_scopus_phrase_or_block(config.exclude, loose_wildcards=loose)
         if config.exclude_scope == "title":
             query += f' AND NOT TITLE({exclude})'
         else:
@@ -1386,6 +1594,10 @@ class ScopusClient:
     ABSTRACT_VIEWS = ("META_ABS", "META", "FULL")
     ABSTRACT_DELAY = 0.35  # seconds between abstract retrieval calls
     SEARCH_VIEWS = ("COMPLETE", "STANDARD")  # preference order for search
+    # Offset pagination (start=) is refused at start >= 5000 (HTTP 400);
+    # documented system-level ceiling (dev.elsevier.com API guide). Cursor
+    # pagination would lift it but is not implemented.
+    OFFSET_RESULT_CEILING = 5000
 
     @retry()
     def search(self, query: str, count: int = 100) -> list[Record]:
@@ -1417,6 +1629,13 @@ class ScopusClient:
                 records.append(self._parse(e))
             total = int(data.get("search-results", {}).get("opensearch:totalResults", 0))
             log.info(f"Scopus: {len(records)}/{total}")
+            if total > self.OFFSET_RESULT_CEILING and start == 0:
+                log.warning(
+                    "Scopus query matched %d records but offset pagination "
+                    "retrieves at most %d (HTTP 400 beyond). Reduce the "
+                    "result set (e.g. split by publication year) or add "
+                    "cursor pagination.", total, self.OFFSET_RESULT_CEILING,
+                )
             start += page_size
             if start >= total:
                 break
