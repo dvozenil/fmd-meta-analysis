@@ -11,6 +11,14 @@ the *pre-refactor* code by T1 and are frozen as the byte-identical contract.
 If this file ever fails, the refactor has changed query output — the golden
 files are NOT to be edited to make a test pass.
 
+The one sanctioned exception is an intentional, reviewed change of query
+*semantics* (not a refactor) — e.g. the EPMC per-term parenthesization fix:
+only the affected DB's goldens may then be regenerated, and the
+regeneration must prove that every other DB's output stayed byte-identical
+(the EPMC-only deltas in full/update were paren-only). Keep that blast-radius
+assertion in the regeneration step; never regenerate the whole matrix to
+silence an unexpected failure.
+
 Each test loads a mode's YAML config, rebuilds all five database query
 strings, and asserts they match the golden reference byte-for-byte.
 """

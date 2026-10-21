@@ -49,6 +49,7 @@ import logging
 import os
 import re
 import time
+import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import wraps
@@ -641,6 +642,17 @@ class SearchConfig(SearchTermConfig):
         default_factory=lambda: list(_DEFAULT_PUBMED_MESH_IMAGING))
     pubmed_use_exclusions: bool = True
     pubmed_use_human_filter: bool = True
+    # Scope of the exclude (NOT) block: "default" searches the DB's default
+    # fields (tiab / TITLE_ABS / TITLE-ABS-KEY / TI-AB-SU / TS=); "title"
+    # restricts ONLY the NOT clause to the title field, mirroring strategies
+    # (e.g. Web of Science TI=) that exclude reviews/meta-analyses/case
+    # reports by title to avoid dropping records that merely mention them
+    # in the abstract. This asymmetry is DELIBERATE (WoS-mirroring
+    # semantics): inclusion blocks keep their per-builder default scope
+    # (EPMC TITLE_ABS, PubMed [tiab], WoS TS=, Scopus TITLE-ABS-KEY, EBSCO
+    # TI/AB/SU) — TI-scoped exclusions + TS-scoped topic search. Pinned by
+    # tests/test_exclude_scope_and_wildcards.py (positive-block scope tests).
+    exclude_scope: str = "default"
 
 
 def _term_set_lookup(term_sets: dict, key: str | None) -> list[str]:
@@ -701,6 +713,12 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
     exclude = None
     if blocks.get("exclude"):
         exclude = _term_set_lookup(term_sets, blocks["exclude"])
+    exclude_scope = str(syntax.get("exclude_scope", "default")).strip().lower()
+    if exclude_scope not in ("default", "title"):
+        raise ValueError(
+            f"Invalid search.syntax.exclude_scope {exclude_scope!r}; "
+            "must be 'default' or 'title'"
+        )
 
     return SearchConfig(
         block_a=_term_set_lookup(term_sets, blocks.get("block_a")),
@@ -719,6 +737,7 @@ def load_search_config(path: str | Path, date_end_override: str | None = None) -
             pubmed_syntax.get("mesh_terms_imaging", _DEFAULT_PUBMED_MESH_IMAGING)),
         pubmed_use_exclusions=bool(pubmed_syntax.get("use_exclusions", True)),
         pubmed_use_human_filter=bool(pubmed_syntax.get("use_human_filter", True)),
+        exclude_scope=exclude_scope,
     )
 
 
@@ -826,10 +845,40 @@ def _build_wos_phrase_or_block(terms: list[str]) -> str:
 
 
 def _build_europepmc_phrase_or_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"' for t in terms)
+    """Build an EPMC OR block of quoted phrases.
+
+    Europe PMC (Lucene) does not stem-expand a wildcard inside quotes, so a
+    quoted wildcard is matched near-literally. The result is term-dependent:
+    some quoted wildcards return 0 hits (``TITLE_ABS:"childhood maltreat*"``
+    = 0 vs 15,714 unquoted) while others still match a handful of literal-ish
+    records (``TITLE_ABS:"functional/dissociative seizure*"`` = 8 vs 203
+    unquoted). Verified empirically 2026-10-15. Terms containing '*' are
+    therefore rendered UNQUOTED.
+
+    Each unquoted wildcard term is individually parenthesized. This is not
+    cosmetic: inside a field group Lucene parses an unparenthesized multiword
+    bare term as an implicit AND across its words, so an OR chain of such
+    terms collapses toward 0 hits (verified live 2026-10-15: a 10-term
+    ``TITLE_ABS:(functional motor disorder* OR functional tremor* OR ...)``
+    group returned 174 hits, while the parenthesized equivalent
+    ``TITLE_ABS:((functional motor disorder*) OR (functional tremor*) OR ...)``
+    returned 49,047). Parenthesizing each term makes the OR group behave as
+    an OR group.
+
+    NOTE the semantic difference that remains: an unquoted multiword term is
+    Lucene bare-term syntax — an AND of the words with stem matching on the
+    truncated word, i.e. broader than an exact phrase.
+    """
+    return " OR ".join(
+        f"({t})" if "*" in t else f'"{t}"' for t in terms
+    )
 
 
 def _build_scopus_phrase_or_block(terms: list[str]) -> str:
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _build_ebsco_phrase_or(terms: list[str]) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
@@ -841,12 +890,18 @@ def _build_ebsco_tiabsu_block(terms: list[str]) -> str:
     coverage than KW (author keywords only) and narrower than TX
     (All Text, which hits full text and returns ~88% noise).
     """
-    phrase_or = " OR ".join(f'"{t}"' for t in terms)
+    phrase_or = _build_ebsco_phrase_or(terms)
     return f'(TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))'
 
 
-def _build_pubmed_text_block(terms: list[str]) -> str:
-    return " OR ".join(f'"{t}"[tiab]' for t in terms)
+def _build_pubmed_text_block(terms: list[str], field: str = "tiab") -> str:
+    return " OR ".join(f'"{t}"[{field}]' for t in terms)
+
+
+def _pubmed_exclude_block(config: SearchConfig) -> str:
+    """Exclude block for PubMed: [tiab] by default, [ti] with title scope."""
+    field = "ti" if config.exclude_scope == "title" else "tiab"
+    return _build_pubmed_text_block(config.exclude, field=field)
 
 
 def build_pubmed_query(config: SearchConfig | None = None) -> str:
@@ -866,7 +921,7 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
             design_block = _build_pubmed_text_block(config.block_c)
             query += f" AND ({design_block})"
         if config.exclude:
-            exclude_block = _build_pubmed_text_block(config.exclude)
+            exclude_block = _pubmed_exclude_block(config)
             query += f" NOT ({exclude_block})"
         return f"{query} {_date_filter_pubmed(config)}"
 
@@ -898,7 +953,7 @@ def build_pubmed_query(config: SearchConfig | None = None) -> str:
     ) if config.pubmed_use_exclusions else ""
     exclude_clause = ""
     if config.exclude:
-        exclude_block = _build_pubmed_text_block(config.exclude)
+        exclude_block = _pubmed_exclude_block(config)
         exclude_clause = f" NOT ({exclude_block})"
     return f"({fnd_block}) AND ({imaging_block}) AND {filters} {exclusions}{exclude_clause}"
 
@@ -919,7 +974,8 @@ def build_wos_query(config: SearchConfig | None = None) -> str:
         query += f' AND TS=({design})'
     if config.exclude:
         exclude = _build_wos_phrase_or_block(config.exclude)
-        query += f' AND NOT TS=({exclude})'
+        field = "TI" if config.exclude_scope == "title" else "TS"
+        query += f' AND NOT {field}=({exclude})'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -938,7 +994,10 @@ def build_europepmc_query(config: SearchConfig | None = None) -> str:
         query += f' AND (TITLE_ABS:({design}))'
     if config.exclude:
         exclude = _build_europepmc_phrase_or_block(config.exclude)
-        query += f' NOT (TITLE_ABS:({exclude}))'
+        # exclude_scope is exclusion-only by design (WoS-mirroring): the
+        # positive blocks above stay TITLE_ABS. Do NOT title-scope them.
+        field = "TITLE" if config.exclude_scope == "title" else "TITLE_ABS"
+        query += f' NOT ({field}:({exclude}))'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -971,8 +1030,12 @@ def build_ebsco_psycinfo_query(config: SearchConfig | None = None) -> str:
         design = _build_ebsco_tiabsu_block(config.block_c)
         query += f" AND ({design})"
     if config.exclude:
-        exclude = _build_ebsco_tiabsu_block(config.exclude)
-        query += f" AND NOT {exclude}"
+        if config.exclude_scope == "title":
+            exclude = _build_ebsco_phrase_or(config.exclude)
+            query += f" AND NOT TI ({exclude})"
+        else:
+            exclude = _build_ebsco_tiabsu_block(config.exclude)
+            query += f" AND NOT {exclude}"
     return f"{query}{lang_part}{date_part}"
 
 
@@ -991,7 +1054,10 @@ def build_scopus_query(config: SearchConfig | None = None) -> str:
         query += f' AND (TITLE-ABS-KEY({design}))'
     if config.exclude:
         exclude = _build_scopus_phrase_or_block(config.exclude)
-        query += f' AND NOT TITLE-ABS-KEY({exclude})'
+        if config.exclude_scope == "title":
+            query += f' AND NOT TITLE({exclude})'
+        else:
+            query += f' AND NOT TITLE-ABS-KEY({exclude})'
     return f'{query}{date_part}{lang_part}'
 
 
@@ -1143,6 +1209,23 @@ class EuropePMCClient:
 
     BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 
+    @staticmethod
+    def _encode_param(v: Any) -> str:
+        """Encode one query-string parameter for the EPMC REST GET.
+
+        requests' default param encoding percent-encodes parentheses
+        (``(`` -> ``%28``, 3 bytes each), and EPMC's Tomcat front-end rejects
+        request lines above ~8KB with a bare HTTP 400 (URL-length ceiling,
+        verified empirically 2026-10-19). Paren-heavy Lucene queries — e.g.
+        per-term parenthesized wildcard blocks — can exceed it, so ``(``,
+        ``)`` and ``*`` are sent raw. Raw double quotes are themselves
+        rejected by Tomcat, so quotes stay percent-encoded (``%22``).
+        ``quote()`` emits ``%20`` for spaces (3 bytes each) while form
+        encoding uses ``+`` (1 byte), which servlet containers decode as
+        space — convert back to keep the request line short.
+        """
+        return urllib.parse.quote(str(v), safe="()*").replace("%20", "+")
+
     @retry()
     def search(self, query: str, page_size: int = 1000) -> list[Record]:
         log.info(f"Europe PMC query: {query[:200]}...")
@@ -1156,7 +1239,16 @@ class EuropePMCClient:
                 "cursorMark": cursor,
                 "resultType": "core",
             }
-            r = requests.get(self.BASE, params=params, timeout=60)
+            # Build the URL manually: requests' default param encoding
+            # percent-encodes parentheses (x3 bytes), and EPMC's REST GET
+            # rejects request lines above ~8KB with a bare HTTP 400. Paren-
+            # heavy queries (per-term parenthesized wildcard blocks) can blow
+            # past the limit; sending ( ) * raw keeps the request within it.
+            # Raw double quotes are themselves rejected by Tomcat, so quotes
+            # stay percent-encoded (%22).
+            qs = "&".join(f"{k}={self._encode_param(v)}" for k, v in params.items())
+            url = f"{self.BASE}?{qs}"
+            r = requests.get(url, timeout=60)
             r.raise_for_status()
             data = r.json()
             hits = data.get("resultList", {}).get("result", [])
