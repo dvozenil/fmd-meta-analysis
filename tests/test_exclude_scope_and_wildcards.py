@@ -501,7 +501,10 @@ def test_epmc_inclusion_block_b_wildcard_parenthesized(multi_wildcard_config):
 
 def test_epmc_block_c_wildcards_parenthesized(multi_wildcard_config):
     q = build_europepmc_query(multi_wildcard_config)
-    assert 'AND (TITLE_ABS:((case-control*) OR (cohort*)))' in q
+    # 'case-control*' renders as '(case control*)': a hyphen inside the
+    # wildcard-carrying word matches 0 records on EPMC (verified live
+    # 2026-10-21), so the wildcard word is normalized to spaces.
+    assert 'AND (TITLE_ABS:((case control*) OR (cohort*)))' in q
 
 
 def test_epmc_exclude_block_wildcards_parenthesized(multi_wildcard_config):
@@ -517,15 +520,17 @@ def test_epmc_exclude_block_wildcards_parenthesized_title_scope(
     # same config: inclusion blocks must stay TITLE_ABS (C1 asymmetry)
     assert ('TITLE_ABS:((functional motor disorder*) OR (functional tremor*) '
             'OR "conversion disorder")') in q
-    assert 'TITLE_ABS:((case-control*) OR (cohort*))' in q
+    assert 'TITLE_ABS:((case control*) OR (cohort*))' in q
 
 
 def test_epmc_multi_wildcard_full_query_golden(multi_wildcard_config):
     """Byte-golden for the complete rendered EPMC query (all four blocks)."""
+    # '(case control*)' not '(case-control*)': hyphen inside the
+    # wildcard-carrying word is normalized (0-hit fix, verified 2026-10-21).
     assert build_europepmc_query(multi_wildcard_config) == (
         '(TITLE_ABS:((functional motor disorder*) OR (functional tremor*) '
         'OR "conversion disorder")) AND (TITLE_ABS:((neuroimaging*) OR '
-        '"brain imaging")) AND (TITLE_ABS:((case-control*) OR (cohort*))) '
+        '"brain imaging")) AND (TITLE_ABS:((case control*) OR (cohort*))) '
         'NOT (TITLE_ABS:((review*) OR (case report*) OR "meta-analysis")) '
         'AND (LANG:"eng") AND (PUB_YEAR:[1800 TO 2026])'
     )
