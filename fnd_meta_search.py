@@ -2098,6 +2098,47 @@ def _import_ebsco_csv(path: Path) -> list[Record]:
     return records
 
 
+def _is_isbn_doi(token: str) -> bool:
+    """True if a DOI token is an ISBN/book DOI rather than an article DOI.
+
+    WoS RIS exports concatenate the book-chapter DOI and the book's ISBN DOI
+    into one space-separated DO field. Production example (2026-07-31 corpus):
+    ``10.1159/000360062 10.1159/isbn.978-3-318-02647-4`` — the second token is
+    the *book* ISBN DOI and must never be chosen as the article DOI.
+    """
+    return "/isbn" in token.lower()
+
+
+_DOI_TOKEN_RE = re.compile(r"\b10\.\d{4,9}/\S+")
+
+
+def _pick_first_doi(doi_field: str | None) -> str | None:
+    """Return the first genuine article DOI from a DOI field string.
+
+    Some exports (Web of Science book-chapter records) concatenate MULTIPLE
+    DOIs into a single space-separated DO field, e.g.
+    ``10.1159/000360062 10.1159/isbn.978-3-318-02647-4``. A whole-field string
+    comparison then fails dedup, and the trailing ISBN DOI can win the
+    comparison. Conservative fix: only split when the field clearly contains
+    2+ DOI tokens; a single-token field passes through unchanged. ISBN-style
+    tokens (``.../isbn...``) are skipped, and if ALL tokens are ISBN-style the
+    field is treated as empty (a bare book ISBN DOI is not an article DOI).
+    """
+    if doi_field is None:
+        return None
+    s = str(doi_field).strip()
+    if not s:
+        return None
+    tokens = _DOI_TOKEN_RE.findall(s)
+    if len(tokens) < 2:
+        return s
+    # 2+ DOI tokens detected: keep the first non-ISBN token.
+    for tok in tokens:
+        if not _is_isbn_doi(tok):
+            return tok
+    return None
+
+
 def _import_ris(path: Path, source_db: str) -> list[Record]:
     """Import a RIS file and convert to Record objects.
 
@@ -2117,7 +2158,7 @@ def _import_ris(path: Path, source_db: str) -> list[Record]:
 
         authors = current.get("AU", [])
         journal = " ".join(current.get("T2", []) or current.get("JO", []))
-        doi = _normalize_doi(" ".join(current.get("DO", [])).strip() or None)
+        doi = _normalize_doi(_pick_first_doi(" ".join(current.get("DO", [])).strip() or None))
         abstract = " ".join(current.get("AB", []))
         keywords = current.get("KW", [])
 
