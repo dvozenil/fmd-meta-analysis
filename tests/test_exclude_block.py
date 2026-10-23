@@ -70,8 +70,9 @@ def test_pubmed_exclude_syntax(exclude_config):
 
 def test_wos_exclude_syntax(exclude_config):
     q = build_wos_query(exclude_config)
-    # WoS: AND NOT TS=(... OR ...)
-    assert 'AND NOT TS=("functional MRI" OR "fMRI" OR "Huntington disease")' in q
+    # WoS: bare NOT (no "AND NOT" operator in WoS): inclusion NOT TS=(... OR ...)
+    assert 'NOT TS=("functional MRI" OR "fMRI" OR "Huntington disease")' in q
+    assert "AND NOT" not in q
 
 
 def test_europepmc_exclude_syntax(exclude_config):
@@ -88,9 +89,11 @@ def test_scopus_exclude_syntax(exclude_config):
 
 def test_ebsco_exclude_syntax(exclude_config):
     q = build_ebsco_psycinfo_query(exclude_config)
-    # EBSCO: AND NOT (TI (...) OR AB (...) OR SU (...))
+    # EBSCO: bare NOT (no "AND NOT" operator in EBSCOhost):
+    # inclusion NOT (TI (...) OR AB (...) OR SU (...))
     phrase_or = '"functional MRI" OR "fMRI" OR "Huntington disease"'
-    assert f'AND NOT (TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))' in q
+    assert f'NOT (TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))' in q
+    assert "AND NOT" not in q
 
 
 # ---------------------------------------------------------------------------

@@ -116,7 +116,7 @@ def test_exclude_scope_invalid_raises(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Feature 1: per-database title-scope NOT syntax (joining conventions kept:
-# PubMed/EPMC bare NOT; Scopus/EBSCO/WoS AND NOT)
+# PubMed/EPMC/WoS/EBSCO bare NOT; Scopus AND NOT)
 # ---------------------------------------------------------------------------
 
 def test_pubmed_exclude_scope_title(title_scope_config):
@@ -132,13 +132,15 @@ def test_pubmed_default_scope_stays_tiab(default_scope_config):
 
 def test_wos_exclude_scope_title(title_scope_config):
     q = build_wos_query(title_scope_config)
-    assert 'AND NOT TI=("review" OR "meta-analysis" OR "case report")' in q
-    assert "AND NOT TS=(" not in q
+    assert 'NOT TI=("review" OR "meta-analysis" OR "case report")' in q
+    assert "AND NOT" not in q
+    assert "NOT TS=(" not in q
 
 
 def test_wos_default_scope_stays_ts(default_scope_config):
     q = build_wos_query(default_scope_config)
-    assert 'AND NOT TS=("review" OR "meta-analysis" OR "case report")' in q
+    assert 'NOT TS=("review" OR "meta-analysis" OR "case report")' in q
+    assert "AND NOT" not in q
 
 
 def test_europepmc_exclude_scope_title(title_scope_config):
@@ -166,14 +168,16 @@ def test_scopus_default_scope_stays_title_abs_key(default_scope_config):
 
 def test_ebsco_exclude_scope_title(title_scope_config):
     q = build_ebsco_psycinfo_query(title_scope_config)
-    assert 'AND NOT TI ("review" OR "meta-analysis" OR "case report")' in q
+    assert 'NOT TI ("review" OR "meta-analysis" OR "case report")' in q
+    assert "AND NOT" not in q
     assert "AB (\"review\"" not in q
 
 
 def test_ebsco_default_scope_stays_tiabsu(default_scope_config):
     q = build_ebsco_psycinfo_query(default_scope_config)
     phrase_or = '"review" OR "meta-analysis" OR "case report"'
-    assert f'AND NOT (TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))' in q
+    assert f'NOT (TI ({phrase_or}) OR AB ({phrase_or}) OR SU ({phrase_or}))' in q
+    assert "AND NOT" not in q
 
 
 def test_title_scope_positive_blocks_unchanged(title_scope_config, default_scope_config):
@@ -266,8 +270,8 @@ SCOPE_LOCK_CASES = [
             'TS=("functional motor disorder*" OR "functional tremor*")',
             'TS=("neuroimaging" OR "brain imaging*")',
         ],
-        'AND NOT TS=("review" OR "meta-analysis" OR "case report")',
-        'AND NOT TI=("review" OR "meta-analysis" OR "case report")',
+        'NOT TS=("review" OR "meta-analysis" OR "case report")',
+        'NOT TI=("review" OR "meta-analysis" OR "case report")',
         id="wos",
     ),
     pytest.param(
@@ -287,10 +291,10 @@ SCOPE_LOCK_CASES = [
             'AB ("neuroimaging" OR "brain imaging*")',
             'SU ("neuroimaging" OR "brain imaging*")',
         ],
-        ('AND NOT (TI ("review" OR "meta-analysis" OR "case report") '
+        ('NOT (TI ("review" OR "meta-analysis" OR "case report") '
          'OR AB ("review" OR "meta-analysis" OR "case report") '
          'OR SU ("review" OR "meta-analysis" OR "case report"))'),
-        'AND NOT TI ("review" OR "meta-analysis" OR "case report")',
+        'NOT TI ("review" OR "meta-analysis" OR "case report")',
         id="ebsco_psycinfo",
     ),
 ]

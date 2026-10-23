@@ -1184,9 +1184,13 @@ def build_wos_query(config: SearchConfig | None = None) -> str:
         design = _build_wos_phrase_or_block(config.block_c)
         query += f' AND TS=({design})'
     if config.exclude:
+        # WoS has no "AND NOT" operator (official set: AND, OR, NOT, NEAR,
+        # SAME; precedence NOT > AND > OR). Parenthesize the accumulated
+        # inclusion query and join with bare NOT so the negation is
+        # unambiguous, then group the whole clause before lang/date parts.
         exclude = _build_wos_phrase_or_block(config.exclude)
         field = "TI" if config.exclude_scope == "title" else "TS"
-        query += f' AND NOT {field}=({exclude})'
+        query = f'(({query}) NOT {field}=({exclude}))'
     return f'{query}{lang_part}{date_part}'
 
 
@@ -1241,12 +1245,15 @@ def build_ebsco_psycinfo_query(config: SearchConfig | None = None) -> str:
         design = _build_ebsco_tiabsu_block(config.block_c)
         query += f" AND ({design})"
     if config.exclude:
+        # EBSCOhost has no "AND NOT" operator (official set: AND, OR, NOT).
+        # Parenthesize the accumulated inclusion query and join with bare
+        # NOT, then group the whole clause before lang/date parts.
         if config.exclude_scope == "title":
             exclude = _build_ebsco_phrase_or(config.exclude)
-            query += f" AND NOT TI ({exclude})"
+            query = f"(({query}) NOT TI ({exclude}))"
         else:
             exclude = _build_ebsco_tiabsu_block(config.exclude)
-            query += f" AND NOT {exclude}"
+            query = f"(({query}) NOT {exclude})"
     return f"{query}{lang_part}{date_part}"
 
 
