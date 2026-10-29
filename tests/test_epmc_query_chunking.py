@@ -34,9 +34,9 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
+import requests as fms_requests
 
 import fnd_meta_search
-import requests as fms_requests
 from fnd_meta_search import (
     EPMCChunkPlan,
     EuropePMCClient,
@@ -70,7 +70,7 @@ class _Resp:
     def __init__(self, payload: dict):
         self._payload = payload
 
-    def raise_for_status(self) -> None:  # noqa: D401 - fake requests.Response
+    def raise_for_status(self) -> None:
         return None
 
     def json(self) -> dict:
@@ -151,13 +151,13 @@ def _legacy_url(query: str, page_size: int, cursor: str = "*") -> str:
 
 def _small_config(**overrides) -> SearchConfig:
     """A compact but multi-group config for transport tests."""
-    kwargs = dict(
-        block_a=[f"symptom{i:02d}*" for i in range(12)],
-        block_b=["imaging*"],
-        date_start=None,
-        date_end="2026/12/31",
-        language_filter=True,
-    )
+    kwargs = {
+        "block_a": [f"symptom{i:02d}*" for i in range(12)],
+        "block_b": ["imaging*"],
+        "date_start": None,
+        "date_end": "2026/12/31",
+        "language_filter": True,
+    }
     kwargs.update(overrides)
     return SearchConfig(**kwargs)
 
