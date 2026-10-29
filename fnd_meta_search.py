@@ -46,6 +46,7 @@ import csv
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -1416,10 +1417,258 @@ class PubMedClient:
         return out
 
 
+# ---------------------------------------------------------------------------
+# Europe PMC transport: GET request-line budget + OR-group chunking
+# ---------------------------------------------------------------------------
+#
+# Europe PMC's REST GET is fronted by Tomcat, which rejects request lines
+# above ~8 KB with a bare HTTP 400 (see ``EuropePMCClient._encode_param``).
+# Compact encoding keeps today's production queries under that ceiling, but a
+# term list can outgrow it: rendering the FND block with quoted-phrase
+# enumeration (the EPMC recall-audit recommendation) turns a 3.6k-char query
+# into ~8.4k encoded bytes, i.e. a guaranteed 400. ``EuropePMCClient.search``
+# therefore falls back to splitting ONE OR-group at TERM boundaries:
+#
+#     (A1 OR A2 OR ... OR An) AND (B) AND filters
+#         ==  union over chunks of [ (A_chunk) AND (B) AND filters ]
+#
+# The identity is set-theoretic (OR distributes over AND), so a chunked
+# request retrieves exactly the same records as the one-shot query would — no
+# recall change and no rendering change. Only ordering (chunks are
+# concatenated in plan order) and duplicate records (a hit matching terms in
+# two chunks comes back twice) differ, and the merged path deduplicates.
+#
+# The split is driven by the *encoded* byte length of the query that will go
+# on the wire, not by a hardcoded character budget: whatever bytes the other
+# groups + filters occupy are measured first and subtracted from the
+# request-line limit.
+
+
+class QueryTooLongError(ValueError):
+    """A rendered query cannot be made to fit Europe PMC's GET request line.
+
+    Raised only when chunking one OR-group still cannot bring the request
+    under the limit — e.g. a single term longer than the per-chunk budget, or
+    a query whose non-splittable remainder is already oversized (chunking a
+    second OR-group would need a cross-product of chunk sets, which this
+    transport layer deliberately does not attempt).
+    """
+
+
+@dataclass(frozen=True)
+class EPMCChunkPlan:
+    """A recall-neutral split of one Europe PMC query into transportable parts.
+
+    ``chunks`` are complete, independently valid query strings whose union
+    equals the original query's result set. ``group_index`` / ``group_label``
+    / ``term_counts`` / ``encoded_sizes`` exist so ``search()`` can log the
+    plan for PRISMA-S provenance.
+    """
+
+    chunks: tuple[str, ...]
+    group_index: int
+    group_label: str
+    term_counts: tuple[int, ...]
+    encoded_sizes: tuple[int, ...]
+
+    @property
+    def n_chunks(self) -> int:
+        return len(self.chunks)
+
+
+def _scan_top_level(text: str, tokens: tuple[str, ...]) -> list[tuple[int, str]]:
+    """Return ``(offset, token)`` for every token at parenthesis depth 0.
+
+    Double-quoted stretches are skipped wholesale: a Lucene phrase may contain
+    parentheses or the words AND/OR/NOT without affecting query grouping.
+    """
+    hits: list[tuple[int, str]] = []
+    depth = 0
+    in_quotes = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if not in_quotes:
+            if ch == "(":
+                depth += 1
+                i += 1
+                continue
+            if ch == ")":
+                depth = max(0, depth - 1)
+                i += 1
+                continue
+            if depth == 0:
+                matched = next((t for t in tokens if text.startswith(t, i)), None)
+                if matched:
+                    hits.append((i, matched))
+                    i += len(matched)
+                    continue
+        i += 1
+    return hits
+
+
+def _split_top_level(text: str, token: str) -> list[str]:
+    """Split ``text`` on ``token`` occurrences at depth 0 (quotes respected)."""
+    hits = _scan_top_level(text, (token,))
+    if not hits:
+        return [text]
+    parts: list[str] = []
+    last = 0
+    for start, matched in hits:
+        parts.append(text[last:start])
+        last = start + len(matched)
+    parts.append(text[last:])
+    return parts
+
+
+def _split_conjuncts(query: str) -> list[tuple[str, str]]:
+    """Split a query into top-level conjuncts, keeping each one's separator.
+
+    Returns ``[(separator, text), ...]`` where ``separator`` is ``""`` for the
+    first conjunct, ``" AND "`` for a positive conjunct and ``" NOT "`` for an
+    exclusion clause. ``"".join(sep + text for sep, text in items)``
+    reproduces the input byte-for-byte, which is what lets a chunk swap in a
+    shorter replacement for one conjunct without touching the others.
+    """
+    hits = _scan_top_level(query, (" AND ", " NOT "))
+    items: list[tuple[str, str]] = []
+    last = 0
+    sep = ""
+    for start, matched in hits:
+        items.append((sep, query[last:start]))
+        sep = matched
+        last = start + len(matched)
+    items.append((sep, query[last:]))
+    return items
+
+
+def _paren_spans(text: str) -> list[tuple[int, int]]:
+    """Balanced parenthesis spans at depth 0, as ``(open_idx, close_idx)``."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start = -1
+    in_quotes = False
+    for i, ch in enumerate(text):
+        if ch == '"':
+            in_quotes = not in_quotes
+            continue
+        if in_quotes:
+            continue
+        if ch == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                spans.append((start, i))
+                start = -1
+    return spans
+
+
+def _find_or_terms(text: str) -> tuple[str, list[str], str] | None:
+    """Locate the OR-list inside one EPMC group clause.
+
+    Returns ``(prefix, terms, suffix)`` such that
+    ``prefix + " OR ".join(terms) + suffix == text`` — the exact
+    decomposition chunking needs to rebuild the clause with fewer terms.
+    ``None`` when the clause holds no OR-list to split.
+
+    The search descends into parenthesized sub-expressions only after a
+    top-level OR split fails, so ``(TITLE_ABS:(a OR b))`` yields
+    ``("(TITLE_ABS:(", ["a", "b"], "))")`` and the field prefix and suffix
+    are preserved verbatim. Terms are never split: a term that itself nests
+    ``("magnetic" AND "resonance" AND "imaging")`` stays one term because its
+    ANDs sit below the OR-list's depth.
+
+    A negated sub-expression is never entered: disjunctions distribute over
+    AND but not over NOT, so splitting ``A AND NOT (B OR C)`` would change
+    recall. The query builders do not emit that shape; this guard covers
+    hand-written queries passed straight to ``search()``.
+    """
+    parts = _split_top_level(text, " OR ")
+    if len(parts) > 1:
+        return "", parts, ""
+    if text.lstrip().startswith("NOT ") or _scan_top_level(text, (" NOT ",)):
+        return None
+    for open_idx, close_idx in _paren_spans(text):
+        found = _find_or_terms(text[open_idx + 1:close_idx])
+        if found:
+            prefix, terms, suffix = found
+            return (text[:open_idx + 1] + prefix, terms, suffix + text[close_idx:])
+    return None
+
+
+def _balanced_partition(weights: list[int], n_chunks: int) -> list[list[int]]:
+    """Split ``weights`` into ``n_chunks`` contiguous, size-balanced index groups.
+
+    Order is preserved (so a plan is reproducible and auditable) and every
+    group targets an equal share of the total weight rather than a first-fit
+    fill, which keeps chunk sizes — and therefore per-chunk hit counts —
+    comparable. The caller verifies the result against the real byte budget
+    and increases ``n_chunks`` if a group still does not fit.
+    """
+    total_items = len(weights)
+    if n_chunks <= 1:
+        return [list(range(total_items))]
+    if n_chunks >= total_items:
+        return [[i] for i in range(total_items)]
+    target = sum(weights) / n_chunks
+    groups: list[list[int]] = []
+    current: list[int] = []
+    current_weight = 0
+    for idx, weight in enumerate(weights):
+        remaining_items = total_items - idx
+        remaining_chunks = n_chunks - len(groups) - 1
+        if (current and len(groups) < n_chunks - 1
+                and current_weight + weight > target
+                and remaining_items > remaining_chunks):
+            groups.append(current)
+            current, current_weight = [], 0
+        current.append(idx)
+        current_weight += weight
+    groups.append(current)
+    return groups
+
+
 class EuropePMCClient:
-    """Europe PMC REST API. Free, no auth. Covers PubMed + preprints + patents."""
+    """Europe PMC REST API. Free, no auth. Covers PubMed + preprints + patents.
+
+    Transport quirks and automatic chunking
+    ---------------------------------------
+    ``search()`` issues GET requests, and EPMC's Tomcat front-end rejects a
+    request line above ~8 KB with a bare HTTP 400. ``_encode_param`` keeps the
+    line compact (raw ``(`` ``)`` ``*``, ``+`` for spaces), which is enough
+    for today's assembled term lists, but a long rendered query — e.g. one
+    using quoted-phrase enumeration — can still overflow the ceiling.
+
+    When the rendered query does not fit ``MAX_REQUEST_LINE_BYTES``,
+    ``plan_chunks()`` splits ONE top-level OR-group at term boundaries and
+    ``search()`` fetches each chunk and merges the results. Because OR
+    distributes over AND, ``(A1 OR ... OR An) AND B`` is exactly the union
+    over chunks of ``(A_chunk) AND B``: same records, same recall, and no
+    change to how any term is rendered. Chunk results are deduplicated by
+    EPMC's own result identity ``(source, id)`` — the same article always
+    comes back from EPMC with the same source+id pair, so the key cannot
+    merge distinct records, and unlike a DOI/title key it never conflates
+    records that genuinely lack a DOI. Queries that already fit take the
+    single-request path unchanged, so short-query output is byte-identical
+    to before chunking existed.
+    """
 
     BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    # Conservative request-line ceiling. Tomcat's default limit is 8 KB and
+    # the rejection was measured there (HTTP 414 on 2026-10-29, bare HTTP 400
+    # on 2026-10-19); 7,500 B leaves headroom for the cursorMark that grows
+    # after the first page and for future non-query parameters.
+    MAX_REQUEST_LINE_BYTES = 7500
+    # Reserve for the cursorMark value: the first request sends "*" (1 byte)
+    # and every later page sends an EPMC-generated cursor (~60-90 chars).
+    CURSOR_RESERVE_BYTES = 128
 
     @staticmethod
     def _encode_param(v: Any) -> str:
@@ -1428,53 +1677,257 @@ class EuropePMCClient:
         requests' default param encoding percent-encodes parentheses
         (``(`` -> ``%28``, 3 bytes each), and EPMC's Tomcat front-end rejects
         request lines above ~8KB with a bare HTTP 400 (URL-length ceiling,
-        verified empirically 2026-10-19). Paren-heavy Lucene queries — e.g.
-        per-term parenthesized wildcard blocks — can exceed it, so ``(``,
-        ``)`` and ``*`` are sent raw. Raw double quotes are themselves
-        rejected by Tomcat, so quotes stay percent-encoded (``%22``).
-        ``quote()`` emits ``%20`` for spaces (3 bytes each) while form
-        encoding uses ``+`` (1 byte), which servlet containers decode as
-        space — convert back to keep the request line short.
+        verified empirically 2026-10-19; a 2026-10-29 reproduction of the
+        phrase-enumerated query answered HTTP 414 URI Too Long instead).
+        Paren-heavy Lucene queries — e.g. per-term parenthesized wildcard
+        blocks — can exceed it, so ``(``, ``)`` and ``*`` are sent raw. Raw
+        double quotes are themselves rejected by Tomcat, so quotes stay
+        percent-encoded (``%22``). ``quote()`` emits ``%20`` for spaces
+        (3 bytes each) while form encoding uses ``+`` (1 byte), which servlet
+        containers decode as space — convert back to keep the request line
+        short.
+
+        Compact encoding alone cannot rescue an arbitrarily long query;
+        ``search()`` falls back to ``plan_chunks()`` (per-OR-group,
+        recall-neutral chunking) when the encoded request line still exceeds
+        ``MAX_REQUEST_LINE_BYTES``.
         """
         return urllib.parse.quote(str(v), safe="()*").replace("%20", "+")
 
+    @classmethod
+    def _request_url(cls, query: str, cursor: str, page_size: int) -> str:
+        """Render the exact GET URL for one page.
+
+        Parameter order (query, format, pageSize, cursorMark, resultType) and
+        per-value ``_encode_param`` calls are unchanged from the original
+        inline construction, so a fitting query produces a byte-identical URL.
+        Encoding is per-character and therefore additive, which
+        ``plan_chunks`` relies on to subtract one group's byte cost from the
+        request-line budget.
+        """
+        params = (
+            ("query", query),
+            ("format", "json"),
+            ("pageSize", str(page_size)),
+            ("cursorMark", cursor),
+            ("resultType", "core"),
+        )
+        qs = "&".join(f"{k}={cls._encode_param(v)}" for k, v in params)
+        return f"{cls.BASE}?{qs}"
+
+    @classmethod
+    def _request_line_bytes(cls, query: str, page_size: int,
+                            cursor: str = "*") -> int:
+        """Length of the GET request line EPMC would receive for ``query``."""
+        return len(cls._request_url(query, cursor, page_size))
+
+    @classmethod
+    def plan_chunks(cls, query: str, page_size: int = 1000) -> EPMCChunkPlan | None:
+        """Plan a recall-neutral split, or ``None`` when ``query`` already fits.
+
+        The budget is expressed in *encoded* bytes — the length the request
+        line will actually have on the wire — and is recomputed from the real
+        query: everything outside the split group (other OR-groups, filters,
+        parameter names) is measured first and the group gets only the
+        remainder. No character budget is hardcoded.
+
+        The largest positive OR-group is the one split, which buys the most
+        shrink per chunk. Exclusion (``NOT``) clauses are never split:
+        ``NOT (A OR B)`` is not the union of ``NOT A`` and ``NOT B``, so
+        splitting one would change recall.
+        """
+        if (cls._request_line_bytes(query, page_size) + cls.CURSOR_RESERVE_BYTES
+                <= cls.MAX_REQUEST_LINE_BYTES):
+            return None
+
+        conj = _split_conjuncts(query)
+        enc = cls._encode_param
+        best: tuple[int, int, tuple[str, list[str], str]] | None = None
+        for idx, (sep, text) in enumerate(conj):
+            if sep == " NOT " or text.lstrip().startswith("NOT "):
+                continue  # exclusive clause: splitting would change semantics
+            found = _find_or_terms(text)
+            if not found or len(found[1]) < 2:
+                continue
+            size = len(enc(text))
+            if best is None or size > best[0]:
+                best = (size, idx, found)
+        if best is None:
+            raise QueryTooLongError(
+                f"Europe PMC query is {cls._request_line_bytes(query, page_size)} B "
+                f"(limit {cls.MAX_REQUEST_LINE_BYTES} B) and contains no multi-term "
+                "positive OR-group to split; shorten a term list or drop a filter"
+            )
+
+        _, group_index, (prefix, terms, suffix) = best
+        group_text = prefix + " OR ".join(terms) + suffix
+        # _encode_param is character-wise, so bytes add up exactly across a
+        # concatenation: the fixed part of the query costs what is left after
+        # removing the group.
+        fixed_bytes = len(enc(query)) - len(enc(group_text))
+        # The URL with an empty query is exactly the non-query part of the
+        # request line, so the query text may occupy the difference.
+        overhead = cls._request_line_bytes("", page_size)
+        group_budget = (cls.MAX_REQUEST_LINE_BYTES - cls.CURSOR_RESERVE_BYTES
+                        - overhead - fixed_bytes)
+        or_sep_bytes = len(enc(" OR "))
+        capacity = (group_budget - len(enc(prefix)) - len(enc(suffix))
+                    + or_sep_bytes)
+        # Weight of a term as it costs inside a chunk: the term plus the OR
+        # separator that precedes every term but the first (the +1 separator
+        # is added back in `capacity`).
+        weights = [len(enc(t)) + or_sep_bytes for t in terms]
+        widest = max(weights)
+        if capacity < widest:
+            oversized = terms[weights.index(widest)]
+            raise QueryTooLongError(
+                f"Europe PMC query is too long and one term of the split OR-group "
+                f"alone costs {len(enc(oversized))} B, more than the {max(capacity, 0)} B "
+                "per-chunk budget once the other groups and filters are kept; "
+                f"shorten the term {oversized!r}"
+            )
+
+        n_chunks = max(1, min(len(terms), math.ceil(sum(weights) / capacity)))
+        while n_chunks <= len(terms):
+            groups = _balanced_partition(weights, n_chunks)
+            if all(sum(weights[i] for i in g) <= capacity for g in groups):
+                break
+            n_chunks += 1
+        else:  # pragma: no cover - only reachable if capacity < widest
+            raise QueryTooLongError(
+                "Europe PMC query cannot be split into transportable chunks"
+            )
+
+        field_hint = prefix.strip().strip("(").split(":")[0].strip() or "?"
+        chunks: list[str] = []
+        term_counts: list[int] = []
+        encoded_sizes: list[int] = []
+        for group in groups:
+            rebuilt = list(conj)
+            chunk_text = prefix + " OR ".join(terms[i] for i in group) + suffix
+            rebuilt[group_index] = (conj[group_index][0], chunk_text)
+            chunk_query = "".join(sep + text for sep, text in rebuilt)
+            chunk_bytes = cls._request_line_bytes(chunk_query, page_size)
+            if chunk_bytes + cls.CURSOR_RESERVE_BYTES > cls.MAX_REQUEST_LINE_BYTES:
+                raise QueryTooLongError(  # pragma: no cover - defensive
+                    f"Europe PMC chunk still overflows the request line "
+                    f"({chunk_bytes} B > {cls.MAX_REQUEST_LINE_BYTES} B)"
+                )
+            chunks.append(chunk_query)
+            term_counts.append(len(group))
+            encoded_sizes.append(chunk_bytes)
+
+        return EPMCChunkPlan(
+            chunks=tuple(chunks),
+            group_index=group_index,
+            group_label=f"group {group_index + 1} [{field_hint}]",
+            term_counts=tuple(term_counts),
+            encoded_sizes=tuple(encoded_sizes),
+        )
+
     @retry()
     def search(self, query: str, page_size: int = 1000) -> list[Record]:
+        """Run one query, chunking transparently when it exceeds the URL limit.
+
+        Chunking does not change query semantics (see the class docstring):
+        the union of the chunk result sets equals the one-shot result set.
+        Chunked results are returned in chunk order with duplicates collapsed
+        on EPMC's ``(source, id)`` identity, so the returned ``Record`` list
+        keeps exactly the same shape as the single-request path.
+        """
         log.info(f"Europe PMC query: {query[:200]}...")
-        records: list[Record] = []
+        plan = self.plan_chunks(query, page_size)
+        if plan is None:
+            hits, _ = self._collect_hits(query, page_size)
+            return [self._parse(h) for h in hits]
+
+        log.info(
+            f"Europe PMC: query needs {self._request_line_bytes(query, page_size)} B "
+            f"of request line (limit {self.MAX_REQUEST_LINE_BYTES} B) — splitting "
+            f"{plan.group_label} into {plan.n_chunks} chunks "
+            f"[terms per chunk: {', '.join(map(str, plan.term_counts))}; "
+            f"chunk request lines: {', '.join(map(str, plan.encoded_sizes))} B]"
+        )
+        merged: list[Record] = []
+        seen: set[tuple[str, str]] = set()
+        retrieved = 0
+        duplicates = 0
+        summed_hit_counts = 0
+        for i, chunk in enumerate(plan.chunks, 1):
+            log.debug(f"Europe PMC chunk {i}/{plan.n_chunks} query: {chunk}")
+            hits, hit_count = self._collect_hits(chunk, page_size)
+            retrieved += len(hits)
+            summed_hit_counts += hit_count or 0
+            new = 0
+            for h in hits:
+                key = self._result_key(h)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(self._parse(h))
+                new += 1
+            duplicates += len(hits) - new
+            log.info(
+                f"Europe PMC: chunk {i}/{plan.n_chunks} hitCount={hit_count} "
+                f"retrieved={len(hits)} new={new} unique-so-far={len(merged)}"
+            )
+        log.info(
+            f"Europe PMC: merged {len(merged)} unique records from "
+            f"{plan.n_chunks} chunks (summed chunk hitCount={summed_hit_counts}, "
+            f"retrieved={retrieved}, duplicates dropped={duplicates})"
+        )
+        return merged
+
+    def _collect_hits(self, query: str,
+                      page_size: int) -> tuple[list[dict[str, Any]], int | None]:
+        """Page through one query and return its raw hits plus ``hitCount``."""
+        hits_all: list[dict[str, Any]] = []
+        hit_count: int | None = None
         cursor = "*"
         while True:
-            params = {
-                "query": query,
-                "format": "json",
-                "pageSize": page_size,
-                "cursorMark": cursor,
-                "resultType": "core",
-            }
-            # Build the URL manually: requests' default param encoding
-            # percent-encodes parentheses (x3 bytes), and EPMC's REST GET
-            # rejects request lines above ~8KB with a bare HTTP 400. Paren-
-            # heavy queries (per-term parenthesized wildcard blocks) can blow
-            # past the limit; sending ( ) * raw keeps the request within it.
-            # Raw double quotes are themselves rejected by Tomcat, so quotes
-            # stay percent-encoded (%22).
-            qs = "&".join(f"{k}={self._encode_param(v)}" for k, v in params.items())
-            url = f"{self.BASE}?{qs}"
+            url = self._request_url(query, cursor, page_size)
             r = requests.get(url, timeout=60)
             r.raise_for_status()
             data = r.json()
+            if hit_count is None:
+                raw_hit_count = data.get("hitCount")
+                try:
+                    hit_count = int(raw_hit_count) if raw_hit_count is not None else None
+                except (TypeError, ValueError):
+                    hit_count = None
             hits = data.get("resultList", {}).get("result", [])
             if not hits:
                 break
-            for h in hits:
-                records.append(self._parse(h))
+            hits_all.extend(hits)
             next_cursor = data.get("nextCursorMark")
-            log.info(f"Europe PMC: retrieved {len(records)} so far")
+            log.info(f"Europe PMC: retrieved {len(hits_all)} so far")
             if not next_cursor or next_cursor == cursor:
                 break
             cursor = next_cursor
             time.sleep(0.2)
-        return records
+        return hits_all, hit_count
+
+    @staticmethod
+    def _result_key(hit: dict[str, Any]) -> tuple[str, str]:
+        """Identity of one EPMC result: ``(source, id)``.
+
+        Deliberately EPMC's own identity rather than a DOI/title key: within a
+        single EPMC search the only possible duplicates are the same article
+        returned by different chunk requests, and EPMC always reports that
+        article with the same ``source`` + ``id`` pair. DOI or normalized
+        title would additionally risk collapsing records that legitimately
+        share (or lack) those fields.
+        """
+        source = str(hit.get("source") or "")
+        result_id = str(hit.get("id") or "")
+        if not result_id:
+            # Defensive: EPMC always returns an id; if one is missing, fall
+            # back to a content hash so no record is silently dropped.
+            digest = hashlib.sha1(
+                json.dumps(hit, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            return (source, f"__no_id__:{digest}")
+        return (source, result_id)
 
     @staticmethod
     def _parse(h: dict[str, Any]) -> Record:

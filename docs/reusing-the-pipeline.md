@@ -166,6 +166,37 @@ The language filter is a **single global flag**: top-level `search.language_filt
 applies to every database — there is no per-database language override. Set it
 to `true` to restrict to English, or `false` for no language restriction.
 
+## Long Queries: Automatic Europe PMC Chunking
+
+Europe PMC's REST search is a GET endpoint, and its Tomcat front-end rejects
+request lines above ~8 KB (HTTP 414 on the 2026-10-29 reproduction). The
+client already encodes the query compactly, but a long rendered query — e.g.
+one using quoted-phrase enumeration — can still overflow that limit.
+
+`EuropePMCClient.search()` therefore splits **one positive OR-group at term
+boundaries** and unions the chunk results:
+
+```
+(A1 OR A2 OR … OR An) AND (B) AND filters
+    ==  union over chunks of [ (A_chunk) AND (B) AND filters ]
+```
+
+Because that is the distributive law, the retrieved record set is identical to
+the one-shot query: chunking is transport-only, changes no rendering, and
+needs no config knob. Chunk hits are merged and deduplicated on Europe PMC's
+own `(source, id)` identity; queries that already fit issue the same single
+request as before. The plan and per-chunk hit counts are written to the run
+log for PRISMA-S provenance.
+
+Limits: only one OR-group is split (a `NOT` exclusion clause never is, because
+`NOT (A OR B)` ≠ `NOT A ∪ NOT B`), and a query whose single term or
+non-splittable remainder is oversized raises `QueryTooLongError` with an
+actionable message instead of a bare HTTP error.
+
+See [epmc_query_chunking.md](epmc_query_chunking.md) for the budget
+calculation, the dedup-key rationale, the exact log lines, and the test/live
+verification.
+
 ## Using --db to Select Databases
 
 The `--db` flag (repeatable) restricts which API clients actually **execute**.

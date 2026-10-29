@@ -40,6 +40,7 @@ docs/
   methods_paper_plan.md               # Model-comparison methods paper design
   llm_screening_protocol.md           # Screening execution protocol
   reusing-the-pipeline.md             # Guide: configure/run searches via YAML + --db
+  epmc_query_chunking.md              # Europe PMC URL-limit fallback (automatic query chunking)
   references/                         # Literature reviews and source PDFs
 tests/
   test_scopus_parse.py          # Scopus parser unit tests
